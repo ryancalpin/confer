@@ -179,12 +179,16 @@ class Store:
         )
 
     def plan(self, plan_id: str) -> dict | None:
+        """Exact lookup — the only form protocol handlers may use."""
         rows = self._q("SELECT data FROM plans WHERE id=?", (plan_id,))
-        if not rows:
-            rows = self._q("SELECT data FROM plans WHERE id LIKE ? || '%'", (plan_id,))
-            if len(rows) != 1:
-                return None
-        return json.loads(rows[0]["data"])
+        return json.loads(rows[0]["data"]) if rows else None
+
+    def find_plan(self, prefix: str) -> dict | None:
+        """Owner convenience: exact id, or a unique id prefix (as typed in the CLI)."""
+        if (plan := self.plan(prefix)) or not prefix.isalnum():
+            return plan
+        rows = self._q("SELECT data FROM plans WHERE substr(id, 1, ?) = ?", (len(prefix), prefix))
+        return json.loads(rows[0]["data"]) if len(rows) == 1 else None
 
     def plans(self) -> list[dict]:
         return [json.loads(r["data"]) for r in self._q("SELECT data FROM plans ORDER BY updated_at DESC")]

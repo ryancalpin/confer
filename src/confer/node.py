@@ -331,7 +331,7 @@ class Node:
         return plan
 
     def _plan(self, plan_id: str) -> dict:
-        plan = self.store.plan(plan_id)
+        plan = self.store.find_plan(plan_id)
         if not plan:
             raise NodeError(f"no plan {plan_id!r}")
         return plan
@@ -597,7 +597,10 @@ class Node:
             # malformed or unauthorized: permanent — keep it marked as seen
             raise Rejected(str(exc) or exc.__class__.__name__) from exc
         except Exception:
-            self.store._x("DELETE FROM seen WHERE env_id=?", (opened.id,))  # let a retry through
+            # Transient local failure (disk, calendar fetch...): forget the id so the
+            # sender's retry of this same envelope is processed — at-least-once
+            # delivery. The envelope never took effect, so this is not a replay.
+            self.store._x("DELETE FROM seen WHERE env_id=?", (opened.id,))
             raise
         return {"ok": True}
 

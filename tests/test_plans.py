@@ -70,3 +70,11 @@ def test_revise_resets_answers():
     P.record_response(plan, "p0", "decline", [])
     P.revise(plan, [slot(9, 19)])
     assert plan["rev"] == 2 and plan["participants"]["p0"]["status"] == "invited" and len(plan["slots"]) == 1
+
+
+@pytest.mark.parametrize("rrule", ["FREQ=SECONDLY", "FREQ=WEEKLY\rEND:VEVENT\rBEGIN:VEVENT\rSUMMARY:Phish", "FREQ=HOURLY"])
+def test_hostile_recurrence_is_refused(rrule):
+    wire = P.wire_view(make())
+    wire["rrule"] = rrule
+    with pytest.raises(P.PlanError, match="rrule"):
+        P.validate_wire_plan(wire, organizer="org")

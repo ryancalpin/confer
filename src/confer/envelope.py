@@ -11,6 +11,7 @@ and route by ``to`` without ever seeing message types or contents.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ MAX_AGE_SECONDS = 7 * 24 * 3600
 SEEN_TTL_SECONDS = MAX_AGE_SECONDS + 24 * 3600
 MEDIA_TYPE = "application/vnd.confer.envelope+json"
 MAX_CT_CHARS = 16 * 1024 * 1024  # ~12 MB plaintext after base64
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _OUTER_FIELDS = ("v", "id", "from", "to", "ts", "ct")
 
 
@@ -76,6 +78,8 @@ def check_outer(env: Any, *, now: float | None = None, max_age: int = MAX_AGE_SE
     if not isinstance(env["ts"], int) or isinstance(env["ts"], bool):
         raise EnvelopeError("ts must be an integer")
     if not all(isinstance(env[k], str) for k in ("id", "from", "to", "ct", "sig")):
+        raise EnvelopeError("malformed envelope fields")
+    if not _ID_RE.match(env["id"]) or len(env["from"]) != 43 or len(env["to"]) != 43 or len(env["sig"]) > 100:
         raise EnvelopeError("malformed envelope fields")
     current = now if now is not None else time.time()
     if env["ts"] > current + MAX_FUTURE_SECONDS or env["ts"] < current - max_age:

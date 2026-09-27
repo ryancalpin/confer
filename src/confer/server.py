@@ -38,6 +38,8 @@ RELAY_REQ_MAX_SKEW = 300
 class RateLimiter:
     """Sliding-window limit per key (client IP or sender id)."""
 
+    MAX_KEYS = 10000
+
     def __init__(self, limit: int, window: float):
         self.limit, self.window = limit, window
         self._hits: dict[str, deque] = defaultdict(deque)
@@ -52,9 +54,13 @@ class RateLimiter:
             if len(q) >= self.limit:
                 return False
             q.append(now)
-            if len(self._hits) > 10000:  # bound memory under address churn
-                for k in [k for k, v in self._hits.items() if not v][:5000]:
+            if len(self._hits) > self.MAX_KEYS:  # bound memory under address churn
+                idle = [k for k, v in self._hits.items() if not v or now - v[-1] > self.window]
+                for k in idle:
                     del self._hits[k]
+                if len(self._hits) > self.MAX_KEYS:  # still full: drop the least recently active half
+                    for k in sorted(self._hits, key=lambda k: self._hits[k][-1])[: len(self._hits) // 2]:
+                        del self._hits[k]
             return True
 
 

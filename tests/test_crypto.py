@@ -59,3 +59,14 @@ def test_identity_persistence_and_fingerprint(tmp_path):
     sig = ident.sign(b"hi")
     assert verify(ident.agent_id, b"hi", sig) and not verify(ident.agent_id, b"ho", sig)
     assert not verify(b64e(b"short"), b"hi", sig)
+
+
+def test_envelope_id_is_bounded():
+    from confer.envelope import canonical
+
+    a, b = Identity.generate(), Identity.generate()
+    env = seal(a, b.agent_id, "note", {})
+    env["id"] = "a" * 100_000
+    env["sig"] = b64e(a.sign(canonical({k: env[k] for k in ("v", "id", "from", "to", "ts", "ct")})))
+    with pytest.raises(EnvelopeError, match="malformed"):
+        check_outer(env)
