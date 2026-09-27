@@ -1,0 +1,14 @@
+# systemd user unit:  cp examples/confer.service ~/.config/systemd/user/ && systemctl --user enable --now confer
+[Unit]
+Description=Confer node (agent-to-agent coordination)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/confer serve --host 127.0.0.1 --port 3067
+# Optional secrets for notify scripts (never put them in config.json):
+EnvironmentFile=-%h/.config/confer/env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
