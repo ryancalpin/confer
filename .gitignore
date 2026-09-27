@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+# node state: never commit keys or databases
+.confer/
+identity.key
+state.db*

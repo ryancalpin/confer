@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "confer"
+version = "0.1.0"
+description = "Open agent-to-agent coordination for personal AI assistants: trusted contacts, private scheduling, E2E-encrypted files, over A2A."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Confer contributors" }]
+keywords = ["a2a", "agents", "scheduling", "personal-assistant", "mcp", "e2ee"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Communications",
+  "Topic :: Office/Business :: Scheduling",
+]
+dependencies = [
+  "pynacl>=1.5",
+  "python-dateutil>=2.8",
+]
+
+[project.optional-dependencies]
+ics = ["icalendar>=5.0", "recurring-ical-events>=2.1"]
+mcp = ["mcp>=1.2"]  # 1.x (FastMCP) and 2.x (MCPServer) both supported
+dev = ["pytest>=8", "icalendar>=5.0", "recurring-ical-events>=2.1"]
+
+[project.scripts]
+confer = "confer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/confer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
