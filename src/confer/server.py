@@ -1,4 +1,4 @@
-"""HTTP server: A2A endpoint, Agent Card, optional relay, calendar feed.
+"""HTTP server: A2A endpoint, Agent Card, optional relay, calendar feed, web UI.
 
 Routes
   GET  /.well-known/agent-card.json   A2A v1.0 Agent Card (also /.well-known/agent.json)
@@ -6,6 +6,8 @@ Routes
   GET  /calendar/<feed_token>.ics     confirmed plans, for phone calendar subscription
   GET  /healthz
   POST /relay/v1/{send,fetch,ack}     only with relay mode enabled
+  GET  /ui/<ui_token>                 mobile-first web inbox (secret-token URL)
+  POST /ui/<ui_token>/act             form actions for the web inbox
 
 Stdlib only (ThreadingHTTPServer). Put it behind TLS — Tailscale Serve/Funnel,
 Caddy, or any reverse proxy. Envelopes are end-to-end encrypted and signed, so
@@ -17,6 +19,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
@@ -27,6 +30,7 @@ from .envelope import MAX_AGE_SECONDS, MAX_CT_CHARS, MEDIA_TYPE, EnvelopeError, 
 from .identity import b64d, verify
 from .node import Node, Rejected
 from .transport import A2A_PATH, A2A_VERSION, REJECTED, a2a_reply, extract_envelope, text_reply
+from . import webui
 
 log = logging.getLogger("confer.server")
 
@@ -110,6 +114,16 @@ class ConferServer:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         node.kick = self._wake.set  # outbound work happens on the worker thread
+        # Lazily create a UI token so the web inbox URL is stable across restarts.
+        if not node.config.get("ui_token"):
+            node.config["ui_token"] = secrets.token_urlsafe(24)
+            node.save_config()
+
+    @property
+    def ui_url(self) -> str:
+        """Secret-token URL for the mobile web inbox."""
+        token = self.node.config.get("ui_token", "")
+        return f"{self.public_url}/ui/{token}"
 
     def start(self) -> "ConferServer":
         for target in (self.httpd.serve_forever, self._worker):
@@ -238,6 +252,19 @@ class _Handler(BaseHTTPRequestHandler):
     def _client(self) -> str:
         return self.client_address[0]
 
+    def _send_ui(self, code: int, body: bytes, extra_headers: list[tuple[str, str]] | None = None) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in webui.UI_SECURITY_HEADERS:
+            self.send_header(name, value)
+        if extra_headers:
+            for name, value in extra_headers:
+                self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path in ("/.well-known/agent-card.json", "/.well-known/agent.json"):
@@ -249,6 +276,13 @@ class _Handler(BaseHTTPRequestHandler):
             expected = str(self.app.node.config.get("feed_token", ""))
             if expected and hmac.compare_digest(token, expected):
                 return self._send(200, self.app.node.calendar_ics(), "text/calendar; charset=utf-8")
+        if path.startswith("/ui/"):
+            request_token = path[len("/ui/"):].split("/")[0]
+            ui_token = str(self.app.node.config.get("ui_token", ""))
+            code, body = webui.handle_get(self.app.node, ui_token, request_token)
+            if code == 200:
+                return self._send_ui(200, body)
+            return self._send(404, {"error": "not found"})
         self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -258,13 +292,35 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return self._send(400, {"error": "bad length"})
+        path = self.path.split("?", 1)[0]
+        # Route /ui/ POSTs before JSON parsing; cap body at 64 KB for form data.
+        if path.startswith("/ui/") and path.endswith("/act"):
+            ui_token = str(self.app.node.config.get("ui_token", ""))
+            # Extract token from /ui/<token>/act
+            request_token = path[len("/ui/"):-len("/act")]
+            UI_MAX_BODY = 64 * 1024
+            if length <= 0 or length > UI_MAX_BODY:
+                return self._send(413, {"error": "body too large or empty"})
+            body_bytes = self.rfile.read(length)
+            status, redirect, err_body = webui.handle_post(self.app.node, ui_token, request_token, body_bytes)
+            if status == 303:
+                self.send_response(303)
+                self.send_header("Location", redirect)
+                self.send_header("Content-Length", "0")
+                for name, value in webui.UI_SECURITY_HEADERS:
+                    self.send_header(name, value)
+                self.end_headers()
+                return
+            if status in (403, 404):
+                return self._send(status, {"error": "forbidden" if status == 403 else "not found"})
+            # 200 with error page
+            return self._send_ui(200, err_body)
         if length <= 0 or length > MAX_BODY:
             return self._send(413, {"error": "body too large or empty"})
         try:
             body = json.loads(self.rfile.read(length))
         except (ValueError, UnicodeDecodeError):
             return self._send(400, _rpc_error(None, -32700, "parse error"))
-        path = self.path.split("?", 1)[0]
         if path == A2A_PATH:
             return self._send(200, self.app.handle_rpc(body))
         if self.app.relay_enabled and isinstance(body, dict):
