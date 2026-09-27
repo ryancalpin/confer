@@ -51,22 +51,22 @@ Claude, Hermes, Codex, OpenClaw, or your own.
 ## Quick start
 
 ```bash
-pip install "confer[ics,mcp]"          # or: uv tool install "confer[ics,mcp]"
+pip install "confer[ics,mcp] @ git+https://github.com/ryancalpin/confer"   # or: uv tool install "confer[ics,mcp] @ git+https://github.com/ryancalpin/confer"
 
-confer init "Ryan" --tz America/Chicago
-confer config endpoint https://ryan.example.ts.net   # where peers reach you (or: confer config relay <url>)
+confer init "Alex" --tz America/Chicago
+confer config endpoint https://alex.example.ts.net   # where peers reach you (or: confer config relay <url>)
 confer config calendar "https://calendar.google.com/calendar/ical/.../basic.ics"
 confer serve --port 3067 &                           # put TLS in front (Tailscale Serve, Caddy, ...)
 
 confer invite "Sam"            # prints a one-time token — text it to Sam
-# Sam runs:  confer accept confer1:eyJ... --name Ryan
+# Sam runs:  confer accept confer1:eyJ... --name Alex
 ```
 
 Then:
 
 ```bash
 confer plan new "Dinner" --with Sam --duration 90 --from 2026-10-01 --to 2026-10-07 --between 18:00-21:00 --location "Luigi's"
-confer inbox                  # Sam's side: "Ryan wants to plan 'Dinner'... you're free for 1, 3"
+confer inbox                  # Sam's side: "Alex wants to plan 'Dinner'... you're free for 1, 3"
 confer plan respond <id> accept          # Sam: accept the options their calendar shows free
 confer plan list                          # both: [confirmed]
 ```
@@ -91,9 +91,9 @@ config.
 ## How it works
 
 ```
- Ryan's agent ──MCP──▶ Ryan's node ══ A2A + signed, encrypted envelopes ══▶ Sam's node ◀──MCP── Sam's agent
+ Alex's agent ──MCP──▶ Alex's node ══ A2A + signed, encrypted envelopes ══▶ Sam's node ◀──MCP── Sam's agent
                           │                    (direct or via relay)             │
-                     ryan.ics (busy)                                         sam.ics (busy)
+                     alex.ics (busy)                                         sam.ics (busy)
 ```
 
 1. **Identity.** Each node has an Ed25519 key, and its agent id *is* the

@@ -123,7 +123,7 @@ plan.
 
 ```json
 { "id": "<≤64 alnum>", "rev": 1, "title": "Dinner",
-  "organizer": "<agent id>", "organizer_name": "Ryan",
+  "organizer": "<agent id>", "organizer_name": "Alex",
   "participants": { "<agent id>": {"name": "Sam"} },
   "slots": [ {"start": "2031-03-04T00:00:00Z", "end": "2031-03-04T01:30:00Z"} ],
   "rrule": "FREQ=WEEKLY;BYDAY=TH" | null, "tz": "America/Chicago",

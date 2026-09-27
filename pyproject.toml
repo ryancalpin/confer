@@ -22,6 +22,10 @@ dependencies = [
   "python-dateutil>=2.8",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ryancalpin/confer"
+Issues = "https://github.com/ryancalpin/confer/issues"
+
 [project.optional-dependencies]
 ics = ["icalendar>=5.0", "recurring-ical-events>=2.1"]
 mcp = ["mcp>=1.2"]  # 1.x (FastMCP) and 2.x (MCPServer) both supported
