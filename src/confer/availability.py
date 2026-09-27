@@ -8,6 +8,7 @@ owner (or an ``autoconfirm`` grant they set) says so.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -55,18 +56,60 @@ class Interval:
         return cls(parse_dt(data["start"]), parse_dt(data["end"]))
 
 
-def occurrences(slot: Interval, rrule: str | None, count: int = 4) -> list[Interval]:
-    """First ``count`` occurrences of a (possibly recurring) slot."""
+ALLOWED_FREQ = {"DAILY", "WEEKLY", "MONTHLY", "YEARLY"}
+_RRULE_PART = re.compile(r"^[A-Z]+=[A-Z0-9,+\-]+$")
+
+
+def normalize_rrule(rrule: str | None) -> str | None:
+    """Validate a recurrence rule and return it in canonical form.
+
+    Only DAILY/WEEKLY/MONTHLY/YEARLY are allowed (sub-daily rules would let a
+    peer make every availability check expand millions of occurrences). A
+    date-only or floating ``UNTIL`` is rewritten to UTC, as RFC 5545 requires
+    when DTSTART has a timezone.
+    """
+    if rrule is None or not str(rrule).strip():
+        return None
+    text = str(rrule).strip().upper().removeprefix("RRULE:")
+    if len(text) > 200 or not all(_RRULE_PART.match(p) for p in text.split(";")):
+        raise ValueError("recurrence must look like FREQ=WEEKLY;BYDAY=TH")
+    parts = dict(p.split("=", 1) for p in text.split(";"))
+    if parts.get("FREQ") not in ALLOWED_FREQ:
+        raise ValueError(f"recurrence FREQ must be one of {', '.join(sorted(ALLOWED_FREQ))}")
+    if "DTSTART" in parts:
+        raise ValueError("recurrence must not carry its own DTSTART")
+    until = parts.get("UNTIL")
+    if until and not until.endswith("Z"):
+        parts["UNTIL"] = (until + "T235959" if "T" not in until else until) + "Z"
+    order = ["FREQ"] + sorted(k for k in parts if k != "FREQ")
+    text = ";".join(f"{k}={parts[k]}" for k in order)
+    rrulestr(text, dtstart=datetime(2030, 1, 1, tzinfo=UTC))  # raises ValueError if unparseable
+    return text
+
+
+def expand(slot: Interval, rrule: str | None, tz: str = "UTC", *, count: int | None = 4,
+           window: "Interval | None" = None) -> list[Interval]:
+    """Occurrences of a (possibly recurring) slot. Recurrence is evaluated in
+    local time of ``tz`` so a weekly 18:00 stays 18:00 across DST changes."""
     if not rrule:
-        return [slot]
-    rule = rrulestr(rrule, dtstart=slot.start)
+        return [slot] if window is None or slot.overlaps(window) else []
+    zone = ZoneInfo(tz)
+    rule = rrulestr(rrule, dtstart=slot.start.astimezone(zone))
     span = slot.end - slot.start
     out: list[Interval] = []
+    if window is not None:
+        starts = rule.between((window.start - span).astimezone(zone), window.end.astimezone(zone), inc=True)
+        return [iv for s in starts[:1000] if (iv := Interval(s.astimezone(UTC), s.astimezone(UTC) + span)).overlaps(window)]
     for start in rule:
-        out.append(Interval(start, start + span))
-        if len(out) >= count:
+        out.append(Interval(start.astimezone(UTC), start.astimezone(UTC) + span))
+        if count is not None and len(out) >= count:
             break
     return out
+
+
+def occurrences(slot: Interval, rrule: str | None, tz: str = "UTC", count: int = 4) -> list[Interval]:
+    """First ``count`` occurrences — enough to catch a clash with a standing commitment."""
+    return expand(slot, rrule, tz, count=count)
 
 
 class BusyProvider(Protocol):
@@ -187,8 +230,8 @@ class Availability:
         self.hours = hours or Hours()
         self.buffer = timedelta(minutes=buffer_minutes)
 
-    def is_free(self, slot: Interval, rrule: str | None = None) -> bool:
-        for occ in occurrences(slot, rrule):
+    def is_free(self, slot: Interval, rrule: str | None = None, tz: str | None = None) -> bool:
+        for occ in occurrences(slot, rrule, tz or self.hours.tz):
             if not self.hours.contains(occ):
                 return False
             padded = Interval(occ.start - self.buffer, occ.end + self.buffer)
@@ -196,8 +239,8 @@ class Availability:
                 return False
         return True
 
-    def free_indices(self, slots: list[Interval], rrule: str | None = None) -> list[int]:
-        return [i for i, s in enumerate(slots) if self.is_free(s, rrule)]
+    def free_indices(self, slots: list[Interval], rrule: str | None = None, tz: str | None = None) -> list[int]:
+        return [i for i, s in enumerate(slots) if self.is_free(s, rrule, tz)]
 
     def candidates(
         self,

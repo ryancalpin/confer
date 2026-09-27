@@ -58,3 +58,24 @@ def test_ics_provider(tmp_path):
     assert av.is_free(slot(6, 18))  # after COUNT
     assert av.is_free(slot(10, 18))  # transparent event doesn't block
     assert not av.is_free(slot(12, 12))  # all-day event
+
+
+def test_rrule_normalization_and_whitelist():
+    import pytest
+
+    from confer.availability import normalize_rrule
+
+    assert normalize_rrule("rrule:freq=weekly;byday=th;until=20311231") == "FREQ=WEEKLY;BYDAY=TH;UNTIL=20311231T235959Z"
+    assert normalize_rrule("") is None
+    for bad in ("FREQ=SECONDLY", "FREQ=MINUTELY;COUNT=5", "FREQ=WEEKLY\nX", "BYDAY=TH", "FREQ=WEEKLY;DTSTART=20300101T000000Z", "FREQ=WEEKLY;BYDAY=XX"):
+        with pytest.raises(ValueError):
+            normalize_rrule(bad)
+
+
+def test_weekly_recurrence_keeps_local_time_across_dst():
+    from confer.availability import expand
+
+    # 18:00 Chicago on Tue 2031-03-04 (CST, UTC-6); DST starts 2031-03-09
+    first = Interval(at(5, 0), at(5, 1))
+    occ = expand(first, "FREQ=WEEKLY;COUNT=2", "America/Chicago")
+    assert [o.start.hour for o in occ] == [0, 23]  # 00:00Z then 23:00Z == 18:00 local both times

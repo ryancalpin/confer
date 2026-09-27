@@ -126,7 +126,8 @@ plan.
   "organizer": "<agent id>", "organizer_name": "Ryan",
   "participants": { "<agent id>": {"name": "Sam"} },
   "slots": [ {"start": "2031-03-04T00:00:00Z", "end": "2031-03-04T01:30:00Z"} ],
-  "rrule": "FREQ=WEEKLY;BYDAY=TH" | null, "location": "", "notes": "",
+  "rrule": "FREQ=WEEKLY;BYDAY=TH" | null, "tz": "America/Chicago",
+  "location": "", "notes": "",
   "quorum": "all" | <int ≥ 1>, "deadline": <unix ts> | null,
   "status": "proposed" | "confirmed" | "needs_reschedule" | "cancelled",
   "chosen": <slot index> | null }
@@ -134,6 +135,12 @@ plan.
 
 Limits: 20 slots, 200 participants, 14-day slot length, 200-character RRULE.
 Other participants' answers are never sent.
+
+**Recurrence.** `rrule` is an RFC 5545 RRULE value. `FREQ` MUST be DAILY,
+WEEKLY, MONTHLY or YEARLY; sub-daily rules are refused to keep availability
+checks cheap. `DTSTART` MUST NOT appear, and `UNTIL` MUST be UTC. The rule
+is expanded in the organizer's IANA timezone `tz`, starting at the slot's
+start converted to that zone, so a weekly 18:00 stays 18:00 local across DST.
 
 ### 6.2 Messages
 

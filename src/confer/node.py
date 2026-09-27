@@ -32,8 +32,6 @@ from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from dateutil.rrule import rrulestr
-
 from . import plans as P
 from .availability import (
     UTC,
@@ -44,6 +42,8 @@ from .availability import (
     ICSProvider,
     Interval,
     StaticProvider,
+    expand,
+    normalize_rrule,
     spread,
 )
 from .envelope import SEEN_TTL_SECONDS, EnvelopeError, MAX_AGE_SECONDS, open_, seal
@@ -96,14 +96,7 @@ class ConfirmedPlansProvider:
             if plan["status"] != "confirmed" or plan.get("chosen") is None or not self.node._attending(plan):
                 continue
             slot = Interval.from_wire(plan["slots"][plan["chosen"]])
-            if plan.get("rrule"):
-                span = slot.end - slot.start
-                for s in rrulestr(plan["rrule"], dtstart=slot.start).between(start - span, end, inc=True):
-                    iv = Interval(s, s + span)
-                    if iv.overlaps(window):
-                        out.append(iv)
-            elif slot.overlaps(window):
-                out.append(slot)
+            out.extend(expand(slot, plan.get("rrule"), plan.get("tz", "UTC"), count=None, window=window))
         return out
 
 
@@ -306,11 +299,10 @@ class Node:
         people = [self._active_contact(n) for n in with_]
         if len({c.agent_id for c in people}) != len(people):
             raise NodeError("a contact is listed twice")
-        if rrule:
-            try:
-                rrulestr(rrule, dtstart=datetime(2020, 1, 1))
-            except (ValueError, TypeError) as exc:
-                raise NodeError(f"bad recurrence rule: {exc}") from exc
+        try:
+            rrule = normalize_rrule(rrule)
+        except ValueError as exc:
+            raise NodeError(f"bad recurrence rule: {exc}") from exc
         if slots is None:
             start = window_start or datetime.fromtimestamp(self.now(), tz=UTC) + timedelta(hours=1)
             end = window_end or start + timedelta(days=7)
@@ -329,6 +321,7 @@ class Node:
             notes=notes,
             quorum=quorum,
             deadline=self.now() + deadline_hours * 3600 if deadline_hours else None,
+            tz=self.tz,
         )
         plan["role"] = "organizer"
         self.store.save_plan(plan)
@@ -661,7 +654,7 @@ class Node:
             if existing and existing["rev"] >= wire["rev"]:
                 return
             slots = P.slots_of(wire)
-            suggested = self.availability().free_indices(slots, wire["rrule"])
+            suggested = self.availability().free_indices(slots, wire["rrule"], wire["tz"])
             plan = {**wire, "role": "participant", "my_status": "invited", "my_ok_slots": [], "suggested": suggested,
                     "created_at": existing["created_at"] if existing else self.now(), "updated_at": self.now()}
             self.store.save_plan(plan)
@@ -779,8 +772,7 @@ class Node:
                 "BEGIN:VEVENT",
                 f"UID:{plan['id']}@confer",
                 f"DTSTAMP:{stamp}",
-                f"DTSTART:{iv.start:%Y%m%dT%H%M%SZ}",
-                f"DTEND:{iv.end:%Y%m%dT%H%M%SZ}",
+                *_ics_times(iv, plan.get("tz", "UTC") if plan.get("rrule") else "UTC"),
                 f"SUMMARY:{_ics_text(plan['title'])}",
                 f"DESCRIPTION:{_ics_text('With ' + plan.get('organizer_name', '') + ', ' + who + ('. ' + plan['notes'] if plan.get('notes') else ''))}",
             ]
@@ -819,6 +811,15 @@ def _safe_name(name: str) -> str:
 def _clean_url(value: Any) -> str:
     v = str(value or "").strip().rstrip("/")
     return v if v.startswith(("http://", "https://")) and len(v) < 500 else ""
+
+
+def _ics_times(iv: Interval, tz: str) -> list[str]:
+    if tz == "UTC":
+        return [f"DTSTART:{iv.start:%Y%m%dT%H%M%SZ}", f"DTEND:{iv.end:%Y%m%dT%H%M%SZ}"]
+    from zoneinfo import ZoneInfo
+
+    z = ZoneInfo(tz)  # recurring: wall-clock time in the organizer's zone survives DST
+    return [f"DTSTART;TZID={tz}:{iv.start.astimezone(z):%Y%m%dT%H%M%S}", f"DTEND;TZID={tz}:{iv.end.astimezone(z):%Y%m%dT%H%M%S}"]
 
 
 def _ics_text(text: str) -> str:

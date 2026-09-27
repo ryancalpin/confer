@@ -16,7 +16,9 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
-from .availability import Interval
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .availability import Interval, normalize_rrule
 
 MAX_SLOTS = 20
 MAX_PARTICIPANTS = 200
@@ -41,6 +43,7 @@ def new_plan(
     notes: str = "",
     quorum: str | int = "all",
     deadline: float | None = None,
+    tz: str = "UTC",
 ) -> dict:
     if not title.strip():
         raise PlanError("plan needs a title")
@@ -63,7 +66,8 @@ def new_plan(
             for aid, name in participants.items()
         },
         "slots": [s.to_wire() for s in slots[:MAX_SLOTS]],
-        "rrule": rrule or None,
+        "rrule": normalize_rrule(rrule),
+        "tz": _tz(tz),
         "location": location[:500],
         "notes": notes[:2000],
         "quorum": quorum,
@@ -77,7 +81,7 @@ def new_plan(
 
 def wire_view(plan: dict) -> dict:
     """What participants see: everything except other people's answers/notes."""
-    keys = ("id", "rev", "title", "organizer", "organizer_name", "slots", "rrule", "location", "notes", "quorum", "deadline", "status", "chosen")
+    keys = ("id", "rev", "title", "organizer", "organizer_name", "slots", "rrule", "tz", "location", "notes", "quorum", "deadline", "status", "chosen")
     out = {k: plan.get(k) for k in keys}
     out["participants"] = {aid: {"name": p["name"]} for aid, p in plan["participants"].items()}
     return out
@@ -106,8 +110,12 @@ def validate_wire_plan(data: Any, organizer: str) -> dict:
     if data.get("status") not in PLAN_STATUSES:
         raise PlanError("bad status")
     rrule = data.get("rrule")
-    if rrule is not None and (not isinstance(rrule, str) or len(rrule) > 200 or "\n" in rrule):
+    if rrule is not None and not isinstance(rrule, str):
         raise PlanError("bad rrule")
+    try:
+        rrule = normalize_rrule(rrule)
+    except ValueError as exc:
+        raise PlanError(f"bad rrule: {exc}") from exc
     return {
         "id": data["id"],
         "rev": data["rev"],
@@ -117,6 +125,7 @@ def validate_wire_plan(data: Any, organizer: str) -> dict:
         "participants": {str(a): {"name": str((p or {}).get("name", ""))[:100]} for a, p in parts.items()},
         "slots": [s.to_wire() for s in parsed],
         "rrule": rrule,
+        "tz": _tz(data.get("tz", "UTC")),
         "location": str(data.get("location", ""))[:500],
         "notes": str(data.get("notes", ""))[:2000],
         "quorum": _quorum(data.get("quorum", "all")),
@@ -124,6 +133,16 @@ def validate_wire_plan(data: Any, organizer: str) -> dict:
         "status": data["status"],
         "chosen": data.get("chosen") if isinstance(data.get("chosen"), int) and 0 <= data["chosen"] < len(parsed) else None,
     }
+
+
+def _tz(tz: Any) -> str:
+    try:
+        if not isinstance(tz, str) or len(tz) > 64:
+            raise ValueError
+        ZoneInfo(tz)
+        return tz
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise PlanError(f"bad timezone {tz!r}") from exc
 
 
 def _quorum(q: Any) -> str | int:
