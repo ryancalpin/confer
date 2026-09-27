@@ -142,8 +142,8 @@ def test_accept_plan_via_post_confirms_end_to_end(net):
         lambda: (p := alice.store.plan(plan["id"])) and p["status"] == "confirmed",
         what="alice sees confirmed",
     )
-    bob_plan = bob.store.plan(plan["id"])
-    assert bob_plan["status"] == "confirmed"
+    # the confirmation reaches bob asynchronously
+    wait_for(lambda: bob.store.plan(plan["id"])["status"] == "confirmed", what="bob sees confirmed")
 
 
 def test_dismiss_inbox_item(net):
