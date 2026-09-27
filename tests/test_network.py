@@ -222,3 +222,18 @@ def test_plain_a2a_text_message_gets_explanation(net):
     r = urllib.request.Request(alice.config["endpoint"] + "/a2a", data=json.dumps(req).encode(), headers={"Content-Type": "application/json"})
     resp = json.load(urllib.request.urlopen(r))
     assert "Confer node" in resp["result"]["message"]["parts"][0]["text"]
+
+
+def test_calendar_lines_are_folded_and_naive_until_is_normalized(net):
+    alice, bob = net.node("alice", tz="America/Chicago"), net.node("bob")
+    net.pair(alice, bob, b_grants="plans,autoconfirm")
+    title = "Very long recurring planning session with lots of words and ünïcødé " * 3
+    plan = alice.create_plan(title, ["bob"], slots=[slot(6, 19)], rrule="FREQ=WEEKLY;UNTIL=20311231T000000")
+    assert plan["rrule"] == "FREQ=WEEKLY;UNTIL=20311231T000000Z"
+    wait_for(lambda: plan_status(alice, plan["id"]) == "confirmed", what="confirmed")
+    ics = alice.calendar_ics()
+    lines = ics.split("\r\n")
+    assert all(len(line.encode()) <= 75 for line in lines)
+    assert "DTSTART;TZID=America/Chicago:20310306T130000" in ics
+    unfolded = ics.replace("\r\n ", "")
+    assert "ünïcødé" in unfolded

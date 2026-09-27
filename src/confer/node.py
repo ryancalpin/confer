@@ -344,7 +344,8 @@ class Node:
             return True
         return plan.get("my_status") == "accepted" and plan.get("chosen") in plan.get("my_ok_slots", [])
 
-    def respond(self, plan_id: str, decision: str, *, slots: list[int] | None = None, note: str = "", counter: list[Interval] | None = None) -> dict:
+    def respond(self, plan_id: str, decision: str, *, slots: list[int] | None = None, note: str = "",
+                counter: list[Interval] | None = None, _kick: bool = True) -> dict:
         """Participant answers a proposal. ``slots`` are 0-based option indexes."""
         with self.store.transaction():
             plan = self._plan(plan_id)
@@ -375,7 +376,7 @@ class Node:
             "ok_slots": ok,
             "note": note[:1000],
             "counter": [c.to_wire() for c in counter or []],
-        })
+        }, kick=_kick)
         return plan
 
     def revise(self, plan_id: str, *, slots: list[Interval] | None = None, duration_minutes: int | None = None,
@@ -412,15 +413,17 @@ class Node:
         self._write_calendar()
         return plan
 
-    def _broadcast(self, plan: dict, type_: str, body: dict) -> None:
+    def _broadcast(self, plan: dict, type_: str, body: dict, *, kick: bool = True) -> None:
         for aid in plan["participants"]:
             c = self.store.contact(aid)
             if c:
                 self._send(c, type_, body, kick=False)
-        self.kick()
+        if kick:
+            self.kick()
 
     def _finalize_if_ready(self, plan: dict) -> None:
-        """Organizer: tally, and announce the outcome if it changed. Caller holds the tx lock."""
+        """Organizer: tally, and queue the outcome if it changed. Caller holds the tx
+        lock and must call ``self.kick()`` after releasing it (no network I/O under the lock)."""
         status, chosen = P.tally(plan, self.now())
         if status == plan["status"]:
             return
@@ -430,7 +433,7 @@ class Node:
         if status == "confirmed":
             when = self._fmt_slot(plan["slots"][chosen])
             self._inbox("plan.confirmed", f"✅ {plan['title']} is set for {when}.", ref=plan["id"])
-            self._broadcast(plan, "plan.final", {"plan": P.wire_view(plan)})
+            self._broadcast(plan, "plan.final", {"plan": P.wire_view(plan)}, kick=False)
             self._write_calendar()
         elif status == "needs_reschedule":
             counters = [c for p in plan["participants"].values() for c in p.get("counter", [])]
@@ -451,6 +454,7 @@ class Node:
                     fresh = self._plan(plan["id"])
                     if fresh["status"] == "proposed":
                         self._finalize_if_ready(fresh)
+                self.kick()
 
     # ------------------------------------------------------ files & notes
     def send_file(self, to: str, path: Path, note: str = "") -> None:
@@ -662,9 +666,12 @@ class Node:
                     "created_at": existing["created_at"] if existing else self.now(), "updated_at": self.now()}
             self.store.save_plan(plan)
             self.store.close_inbox(ref=plan["id"])
+            auto = contact.can("autoconfirm") and bool(suggested)
+            if auto:  # same transaction, so a newer revision can't slip in between
+                self.respond(plan["id"], "accept", slots=suggested, note="auto-confirmed by agent", _kick=False)
         options = ", ".join(f"{i + 1}) {self._fmt_slot(plan['slots'][i])}" for i in range(len(plan["slots"])))
-        if contact.can("autoconfirm") and suggested:
-            self.respond(plan["id"], "accept", slots=suggested, note="auto-confirmed by agent")
+        if auto:
+            self.kick()
             self._inbox("plan.auto", f"📅 {contact.name}'s agent proposed {plan['title']!r}; auto-accepted the times you're free "
                         f"({', '.join(str(i + 1) for i in suggested)}). Options: {options}", ref=plan["id"], contact=contact.agent_id)
             return
@@ -697,6 +704,7 @@ class Node:
                 sugg = "; ".join(self._fmt_slot(c) for c in plan["participants"][contact.agent_id]["counter"])
                 self._inbox("plan.counter", f"↩️ {contact.name} suggests other times for {plan['title']!r}: {sugg}", ref=plan["id"], contact=contact.agent_id)
             self._finalize_if_ready(plan)
+        self.kick()
 
     def _on_plan_final(self, contact: Contact, body: dict) -> None:
         wire = P.validate_wire_plan(body.get("plan"), organizer=contact.agent_id)
@@ -785,7 +793,7 @@ class Node:
                 lines.append(f"RRULE:{plan['rrule'].removeprefix('RRULE:')}")
             lines.append("END:VEVENT")
         lines.append("END:VCALENDAR")
-        return "\r\n".join(lines) + "\r\n"
+        return "\r\n".join(_ics_fold(line) for line in lines) + "\r\n"
 
     def _write_calendar(self) -> None:
         (self.home / "calendar.ics").write_text(self.calendar_ics())
@@ -823,6 +831,21 @@ def _ics_times(iv: Interval, tz: str) -> list[str]:
 
     z = ZoneInfo(tz)  # recurring: wall-clock time in the organizer's zone survives DST
     return [f"DTSTART;TZID={tz}:{iv.start.astimezone(z):%Y%m%dT%H%M%S}", f"DTEND;TZID={tz}:{iv.end.astimezone(z):%Y%m%dT%H%M%S}"]
+
+
+def _ics_fold(line: str) -> str:
+    """RFC 5545 §3.1: content lines are folded at 75 octets, never inside a UTF-8 sequence."""
+    raw = line.encode("utf-8")
+    if len(raw) <= 75:
+        return line
+    parts, i = [], 0
+    while i < len(raw):
+        end = i + (75 if i == 0 else 74)  # continuation lines start with one space
+        while end < len(raw) and raw[end] & 0xC0 == 0x80:
+            end -= 1
+        parts.append(raw[i:end].decode("utf-8"))
+        i = end
+    return "\r\n ".join(parts)
 
 
 def _ics_text(text: str) -> str:
