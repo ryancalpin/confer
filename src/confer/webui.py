@@ -15,6 +15,8 @@ import secrets
 import urllib.parse
 from typing import TYPE_CHECKING
 
+from .identity import fingerprint
+
 if TYPE_CHECKING:
     from .node import Node
 
@@ -189,6 +191,7 @@ def render_page(node: "Node", error: str = "") -> bytes:
     ]
 
     token = node.config.get("ui_token", "")
+    pending_intros = [i for i in node.intros() if i["status"] == "offered" and i["expires_at"] > node.now()]
 
     parts: list[str] = []
     parts.append(f"""<!doctype html>
@@ -218,6 +221,27 @@ def render_page(node: "Node", error: str = "") -> bytes:
   <input type="hidden" name="action" value="dismiss">
   <input type="hidden" name="item_id" value="{_e(item.get('id', ''))}">
   <button type="submit" class="secondary">Dismiss</button>
+</form>
+</div>
+""")
+
+    # ----- Introductions waiting for a yes/no
+    if pending_intros:
+        parts.append('<h2>Introductions</h2>\n')
+        for intro in pending_intros:
+            via = node.store.contact(intro["introducer"])
+            parts.append(f"""<div class="card actionable">
+<div class="card-title">Meet {_e(intro["peer_name"])}?</div>
+<div class="card-meta">Introduced by {_e(via.name if via else "a contact")} · fingerprint {_e(fingerprint(intro["peer_id"]))}</div>
+""")
+            if intro.get("note"):
+                parts.append(f'<div class="card-meta">{_e(intro["note"])}</div>\n')
+            parts.append(f"""<form method="post" action="/ui/{_e(token)}/act">
+  <input type="hidden" name="t" value="{_e(token)}">
+  <input type="hidden" name="action" value="intro">
+  <input type="hidden" name="intro_id" value="{_e(intro["intro_id"])}">
+  <input type="submit" name="decision" value="accept" class="ok">
+  <input type="submit" name="decision" value="decline" class="danger">
 </form>
 </div>
 """)
@@ -317,7 +341,7 @@ UI_SECURITY_HEADERS = [
 
 def handle_get(node: "Node", token: str, request_token: str) -> tuple[int, bytes]:
     """Return (status_code, body_bytes). Token comparison is constant-time."""
-    if not hmac.compare_digest(token, request_token):
+    if not token or not hmac.compare_digest(token, request_token):
         return 404, b'{"error":"not found"}'
     body = render_page(node)
     return 200, body
@@ -329,7 +353,7 @@ def handle_post(node: "Node", token: str, request_token: str, body_bytes: bytes)
     Returns (303_redirect_to, "") or (200_error, error_html_bytes).
     Actually returns (status, redirect_location_or_empty, optional_error_body).
     """
-    if not hmac.compare_digest(token, request_token):
+    if not token or not hmac.compare_digest(token, request_token):
         return 404, "", b'{"error":"not found"}'
 
     try:
@@ -360,6 +384,18 @@ def handle_post(node: "Node", token: str, request_token: str, body_bytes: bytes)
             slots_list: list[int] | None = [int(s) for s in slot_strs] if decision == "accept" else None
             from .node import NodeError
             node.respond(plan_id, decision, slots=slots_list)
+        except Exception as exc:
+            error = str(exc)
+    elif action == "intro":
+        intro_id = (form.get("intro_id") or [""])[0]
+        decision = (form.get("decision") or [""])[0]
+        try:
+            if decision == "accept":
+                node.accept_intro(intro_id)
+            elif decision == "decline":
+                node.decline_intro(intro_id)
+            else:
+                error = "choose accept or decline"
         except Exception as exc:
             error = str(exc)
     else:

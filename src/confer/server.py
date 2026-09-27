@@ -75,7 +75,7 @@ def agent_card(node: Node, public_url: str, relay: bool) -> dict:
         "name": f"{who['name']} (Confer)",
         "description": "Personal agent endpoint on the Confer network: trusted-contact scheduling, notes and E2E-encrypted files.",
         "url": url,
-        "version": "0.1.0",
+        "version": "0.2.0",
         "provider": {"organization": "Confer (open source)", "url": "https://github.com/ryancalpin/confer"},
         "supportedInterfaces": [{"url": url, "protocolBinding": "JSONRPC", "protocolVersion": A2A_VERSION}],
         "capabilities": {
@@ -230,7 +230,7 @@ def _rpc_error(rid: Any, code: int, message: str) -> dict:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "Confer/0.1"
+    server_version = "Confer/0.2"
     protocol_version = "HTTP/1.1"
 
     @property

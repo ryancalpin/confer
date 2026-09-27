@@ -10,6 +10,8 @@
 | Who may reach your agent | Only paired contacts. Everything else is refused before any handler runs. |
 | What a contact may do | Per-contact grants (`plans`, `autoconfirm`, `files`, `notes`) checked on every message. Only a plan's organizer can propose, confirm or cancel it. |
 | Replays | Each envelope id is remembered for 8 days, and envelopes older than 7 days are refused. |
+| Introductions | Only contacts you gave the `intros` grant can introduce people, and every introduction needs your approval. The peer's key is vouched for by the introducer, and its fingerprint is shown to you. |
+| Phone inbox | Served only at a secret-token URL (`ui_token`, 192 bits). A hidden form token is required too. Strict CSP, no framing, no caching, and all text is HTML-escaped. |
 
 ## What it does not protect
 
@@ -19,9 +21,11 @@
 - **Invite interception.** Whoever redeems an invite token first becomes the
   contact. Send tokens privately, and compare the fingerprint shown after
   pairing.
-- **A compromised device or key.** `identity.key` is your identity. If it
-  leaks, generate a new node and re-pair. There is no key rotation yet
-  (planned).
+- **A compromised device or key.** `identity.key` is your identity.
+  - **To retire a key you still control** (routine hygiene, or a lost backup
+    copy), run `confer rotate-key --yes`.
+  - **If an attacker already holds the key,** they can rotate too. In that
+    case, set up a new node and re-pair out of band.
 - **Malicious contacts within their grants.** A contact with `plans` can
   send you proposals, and one with `files` can send you files up to 10 MB.
   Grant only what you'd accept from that person, and remove contacts with

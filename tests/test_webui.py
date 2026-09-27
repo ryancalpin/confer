@@ -179,3 +179,23 @@ def test_ui_url_property(net):
     token = alice.config["ui_token"]
     assert url.endswith(f"/ui/{token}")
     assert url.startswith("http")
+
+
+def test_introduction_can_be_approved_from_the_phone(net):
+    import urllib.parse
+    import urllib.request
+
+    from .conftest import wait_for
+
+    hub, ann, ben = net.node("hub"), net.node("ann"), net.node("ben")
+    net.pair(hub, ann, b_grants="intros")
+    net.pair(hub, ben, b_grants="intros")
+    iid = hub.introduce("ann", "ben")
+    wait_for(lambda: ann.store.intro(iid) and ben.store.intro(iid), what="offers")
+    ben.accept_intro(iid)
+    token = ann.config["ui_token"]
+    page = urllib.request.urlopen(f"{ann.config['endpoint']}/ui/{token}").read().decode()
+    assert "Meet ben?" in page and iid in page
+    data = urllib.parse.urlencode({"t": token, "action": "intro", "intro_id": iid, "decision": "accept"}).encode()
+    urllib.request.urlopen(urllib.request.Request(f"{ann.config['endpoint']}/ui/{token}/act", data=data))
+    wait_for(lambda: (c := ann.store.contact(ben.identity.agent_id)) and c.status == "active", what="connected")

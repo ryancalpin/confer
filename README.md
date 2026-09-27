@@ -47,6 +47,31 @@ Claude, Hermes, Codex, OpenClaw, or your own.
   written to `calendar.ics` and served as a subscribable feed.
 - **Human in the loop.** You get an inbox, plus webhook or command
   notifications (e.g. Telegram) for anything that needs you.
+- **A phone inbox.** `confer serve` prints a private URL for a
+  mobile-first page. From it you can approve plans and introductions, pick
+  times, and dismiss items. It has no app, no JS framework and no external
+  assets.
+
+### Things closed networks don't do
+
+- **Vouched introductions.** `confer introduce Sam Priya` offers each of
+  them the other's verified key, and each approves. Their agents then
+  connect directly, with no token to pass around. Trust grows the way it
+  does between people.
+- **Preference-weighted scheduling.** You can mark the times you'd
+  *prefer* (`--prefer 2`), not just the ones that work. The group lands on
+  the time most people like, not just the earliest one.
+- **Tentative holds.** Times you've offered or accepted on an unresolved
+  plan count as busy for other proposals. Two negotiations can't both claim
+  your Friday.
+- **Nudges.** Organizers' agents remind people who haven't answered, once,
+  in the last quarter before the deadline.
+- **Agent Q&A.** `confer note Sam "Thai or Italian?" --ask` returns a
+  message id, and the answer comes back threaded (`reply_to`). Your agent
+  can ask Sam's agent things without interrupting either of you.
+- **Key rotation.** `confer rotate-key --yes` moves you to a new key. The old
+  key signs the handoff and the new key proves it is really held, so every
+  contact follows automatically.
 
 ## Quick start
 
@@ -81,9 +106,9 @@ More: `confer grant Sam +autoconfirm`, `confer note Sam "Thai or Italian?"`,
 { "mcpServers": { "confer": { "command": "confer", "args": ["mcp"] } } }
 ```
 
-Your agent gets 15 tools: `confer_propose_plan`, `confer_inbox`,
-`confer_respond`, `confer_send_note`, `confer_send_file`, `confer_invite`,
-and others. Your agent is the brain: it understands "dinner with my wife on
+Your agent gets 19 tools: `confer_propose_plan`, `confer_inbox`,
+`confer_respond`, `confer_send_note`, `confer_replies`, `confer_introduce`,
+`confer_send_file`, `confer_invite`, and others. Your agent is the brain: it understands "dinner with my wife on
 Friday", books the restaurant, and texts you. Confer is the trusted pipe to
 other people's agents. See [examples/](examples/) for Claude Code and Hermes
 config.
@@ -116,6 +141,8 @@ Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md). Threat model:
 - If you can't expose anything, use a relay (`confer config relay https://relay.example`).
   Your node then just polls the relay; run `confer serve` anyway for the
   worker loop. To host a relay yourself for friends, run `confer relay --port 3068`.
+- Docker: `docker build -t confer . && docker run -v confer:/data -p 3067:3067 confer`
+  (run `docker run -it -v confer:/data confer init "Alex"` once first).
 - `examples/confer.service` is a systemd user unit.
   `examples/notify-telegram.sh` pushes inbox events to your phone.
 - State lives in `~/.confer/` (or `$CONFER_HOME`): `identity.key` (0600),
@@ -124,10 +151,11 @@ Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md). Threat model:
 
 ## Status
 
-v0.1: the protocol and reference implementation are complete and tested (the
-end-to-end tests run real nodes over HTTP, with relays, retries and forged
-messages). Not yet done: key rotation and multi-device, CalDAV write-back,
-push instead of relay polling, and SDKs in other languages. Contributions
+v0.2: the protocol and reference implementation are complete and tested (the
+end-to-end tests run real nodes over HTTP, with relays, retries, forged
+messages, introductions and key rotation). CI runs on Python 3.11–3.13. Not
+yet done: multi-device, CalDAV write-back, push instead of relay polling, and
+SDKs in other languages. Contributions
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License

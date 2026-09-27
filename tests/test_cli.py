@@ -41,3 +41,29 @@ def test_cli_errors_are_friendly(net, capsys):
     assert code == 1
     code, _, err = run(capsys, "--home", ah + "-missing", "whoami")
     assert code == 1 and "confer init" in err
+
+
+def test_cli_introductions_and_rotation(net, capsys):
+    hub, ann, ben = net.node("hub"), net.node("ann"), net.node("ben")
+    net.pair(hub, ann, b_grants="intros")
+    net.pair(hub, ben, b_grants="intros")
+    assert run(capsys, "--home", str(hub.home), "introduce", "ann", "ben", "--note", "neighbours")[0] == 0
+    wait_for(lambda: ann.intros() and ben.intros(), what="offers")
+    iid = ann.intros()[0]["intro_id"]
+    code, out, _ = run(capsys, "--home", str(ann.home), "intro", "list")
+    assert iid in out and "offered" in out
+    for n in (ann, ben):
+        assert run(capsys, "--home", str(n.home), "intro", "accept", iid)[0] == 0
+    wait_for(lambda: (c := ben.store.contact(ann.identity.agent_id)) and c.status == "active", what="connected")
+    assert run(capsys, "--home", str(ann.home), "rotate-key")[0] == 1  # needs --yes
+    code, out, _ = run(capsys, "--home", str(ann.home), "rotate-key", "--yes")
+    assert code == 0 and "New key" in out
+    # the CLI used its own Node instance on ann's home; the key moved on disk
+    from confer.identity import Identity
+
+    new_id = Identity.load(ann.home / "identity.key").agent_id
+    wait_for(lambda: ben.store.contact(new_id), what="ben follows the rotation")
+    # ann's long-running server process picks the new key up from disk
+    ben.send_note("ann", "still there?")
+    wait_for(lambda: [i for i in ann.inbox() if i["kind"] == "note"], what="note to the rotated key")
+    assert ann.identity.agent_id == new_id

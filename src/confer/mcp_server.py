@@ -112,12 +112,15 @@ def build(node: Node) -> Any:
         return [{"plan_id": p["id"], "status": p["status"], "role": p.get("role"), "summary": P.describe(p, node.tz)} for p in node.plans()]
 
     @mcp.tool()
-    def confer_respond(plan_id: str, decision: str, options: list[int] | None = None, note: str = "", suggest_times: list[str] | None = None) -> dict:
+    def confer_respond(plan_id: str, decision: str, options: list[int] | None = None, note: str = "",
+                       suggest_times: list[str] | None = None, preferred: list[int] | None = None) -> dict:
         """Answer a plan you were invited to. decision: accept | decline | counter.
         options: 1-based option numbers that work (default: the ones your calendar shows free).
+        preferred: 1-based options the human would rather have (subset of options); they break ties.
         suggest_times (for counter): e.g. ['2026-10-03T18:30/90']. Only do this with the human's OK."""
         counter = [_slot(t, node.tz) for t in suggest_times] if suggest_times else None
-        plan = node.respond(plan_id, decision, slots=[o - 1 for o in options] if options else None, note=note, counter=counter)
+        plan = node.respond(plan_id, decision, slots=[o - 1 for o in options] if options else None, note=note, counter=counter,
+                            prefer=[o - 1 for o in preferred] if preferred else None)
         return {"plan_id": plan["id"], "sent": decision}
 
     @mcp.tool()
@@ -146,10 +149,37 @@ def build(node: Node) -> Any:
         return {"ok": node.dismiss(item_id)}
 
     @mcp.tool()
-    def confer_send_note(to: str, text: str, plan_id: str = "") -> dict:
-        """Send a short message to a contact's agent (e.g. 'Does Sam prefer Thai or Italian?')."""
-        node.send_note(to, text, plan_id)
-        return {"sent": True}
+    def confer_send_note(to: str, text: str, plan_id: str = "", reply_to: str = "", is_question: bool = False) -> dict:
+        """Send a short message to a contact's agent (e.g. 'Does Sam prefer Thai or Italian?').
+        is_question flags it for an answer; reply_to answers a message id from the inbox.
+        Returns msg_id — poll confer_replies(msg_id) for answers."""
+        return {"sent": True, "msg_id": node.send_note(to, text, plan_id, reply_to=reply_to, expects_reply=is_question)}
+
+    @mcp.tool()
+    def confer_replies(msg_id: str) -> list[dict]:
+        """Replies received to a note you sent."""
+        return [{"from": i["summary"], "text": i["payload"].get("text", "")} for i in node.replies(msg_id)]
+
+    @mcp.tool()
+    def confer_introduce(contact_a: str, contact_b: str, note: str = "") -> dict:
+        """Vouch for two of the human's contacts to each other. Each side's owner must approve;
+        then their agents connect directly. Only do this when the human asks."""
+        return {"intro_id": node.introduce(contact_a, contact_b, note)}
+
+    @mcp.tool()
+    def confer_intros() -> list[dict]:
+        """Introductions offered to this node (status offered = waiting for the human)."""
+        return [{"intro_id": i["intro_id"], "peer": i["peer_name"], "fingerprint": fingerprint(i["peer_id"]), "status": i["status"],
+                 "note": i["note"]} for i in node.intros()]
+
+    @mcp.tool()
+    def confer_intro_decide(intro_id: str, accept: bool, name: str = "", grants: str = "plans,files,notes") -> dict:
+        """Accept or decline an introduction. Only with the human's explicit OK."""
+        if not accept:
+            node.decline_intro(intro_id)
+            return {"declined": True}
+        c = node.accept_intro(intro_id, name=name or None, grants=grants)
+        return {"name": c.name, "status": c.status}
 
     @mcp.tool()
     def confer_send_file(to: str, path: str, note: str = "") -> dict:

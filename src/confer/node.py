@@ -133,20 +133,36 @@ class Node:
         if not cfg_path.exists():
             raise NodeError(f"no Confer node at {self.home} — run `confer init` first")
         self.config: dict[str, Any] = json.loads(cfg_path.read_text())
-        self.identity = Identity.load(self.home / "identity.key")
-        # after `rotate_key`, the previous key keeps working for a grace period so
-        # messages already in flight (or queued at peers) can still be opened
-        self.old_identity: Identity | None = None
-        old_path = self.home / "identity.old.key"
-        if old_path.exists() and clock() - float(self.config.get("rotated_at", 0)) < KEY_GRACE_SECONDS:
-            self.old_identity = Identity.load(old_path)
+        self.clock = clock
+        self._load_identity()
         self.store = Store(self.home / "state.db")
         self.transport = transport or HttpTransport()
-        self.clock = clock
         self._provider = provider
         self._flush_lock = threading.Lock()
         # the server replaces this with a non-blocking wake-up of its flusher thread
         self.kick: Callable[[], None] = self.flush
+
+    def _load_identity(self) -> None:
+        path = self.home / "identity.key"
+        self._key_mtime = path.stat().st_mtime_ns
+        self.identity = Identity.load(path)
+        # after `rotate_key`, the previous key keeps working for a grace period so
+        # messages already in flight (or queued at peers) can still be opened
+        self.old_identity: Identity | None = None
+        old_path = self.home / "identity.old.key"
+        if old_path.exists() and self.clock() - float(self.config.get("rotated_at", 0)) < KEY_GRACE_SECONDS:
+            self.old_identity = Identity.load(old_path)
+
+    def _refresh_identity(self) -> None:
+        """Another process (e.g. `confer rotate-key` while `confer serve` runs) may
+        have replaced the key on disk; pick it up instead of rejecting mail to it."""
+        try:
+            changed = (self.home / "identity.key").stat().st_mtime_ns != self._key_mtime
+        except OSError:
+            return
+        if changed:
+            self.config = json.loads((self.home / "config.json").read_text())
+            self._load_identity()
 
     # ------------------------------------------------------------------ setup
     @classmethod
@@ -372,6 +388,7 @@ class Node:
                 self._send(c, "key.rotate", {"new_id": new.agent_id, "ts": ts, "proof": proof}, kick=False)
         old.save(self.home / "identity.old.key")
         new.save(self.home / "identity.key")
+        self._key_mtime = (self.home / "identity.key").stat().st_mtime_ns
         self.config["rotated_at"] = self.now()
         self.save_config()
         self.store.rename_agent(old.agent_id, new.agent_id)  # my own plans
@@ -582,6 +599,7 @@ class Node:
 
     def tick(self) -> None:
         """Periodic work: relay pickup, outbox retries, reminders, plan deadlines."""
+        self._refresh_identity()
         self.poll_relay()
         self.flush()
         self.send_reminders()
@@ -742,6 +760,7 @@ class Node:
     # ----------------------------------------------------------- receiving
     def receive(self, env: dict) -> dict:
         """Authenticate, de-duplicate, authorize and dispatch one envelope."""
+        self._refresh_identity()
         ident = self.identity
         if self.old_identity and isinstance(env, dict) and env.get("to") == self.old_identity.agent_id:
             ident = self.old_identity

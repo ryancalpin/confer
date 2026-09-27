@@ -9,3 +9,4 @@ build/
 .confer/
 identity.key
 state.db*
+.claude/

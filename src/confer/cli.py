@@ -156,7 +156,7 @@ def cmd_plan_show(a: argparse.Namespace, node: Node) -> None:
 
 def cmd_plan_respond(a: argparse.Namespace, node: Node) -> None:
     counter = [_slot(s, node.tz) for s in a.suggest] if a.suggest else None
-    plan = node.respond(a.id, a.decision, slots=_indexes(a.slots), note=a.note or "", counter=counter)
+    plan = node.respond(a.id, a.decision, slots=_indexes(a.slots), note=a.note or "", counter=counter, prefer=_indexes(a.prefer))
     print(f"Sent {a.decision} for {plan['title']!r}.")
 
 
@@ -195,8 +195,50 @@ def cmd_send_file(a: argparse.Namespace, node: Node) -> None:
 
 
 def cmd_note(a: argparse.Namespace, node: Node) -> None:
-    node.send_note(a.to, a.text)
-    print(f"Sent to {a.to}.")
+    msg_id = node.send_note(a.to, a.text, reply_to=a.reply_to or "", expects_reply=a.ask)
+    print(f"Sent to {a.to} (message {msg_id}).")
+
+
+def cmd_introduce(a: argparse.Namespace, node: Node) -> None:
+    node.introduce(a.a, a.b, a.note or "")
+    print(f"Introduced {a.a} and {a.b}. They'll each be asked to approve.")
+
+
+def cmd_intro_list(a: argparse.Namespace, node: Node) -> None:
+    from .identity import fingerprint
+
+    rows = node.intros()
+    if a.json:
+        return _print(rows, True)
+    if not rows:
+        print("No introductions.")
+    for r in rows:
+        via = node.store.contact(r["introducer"])
+        print(f"{r['intro_id']}  {r['status']:9} {r['peer_name']} (fp {fingerprint(r['peer_id'])}) via {via.name if via else '?'}")
+
+
+def cmd_intro_accept(a: argparse.Namespace, node: Node) -> None:
+    c = node.accept_intro(a.id, name=a.name, grants=a.grant)
+    print(f"Accepted — connecting with {c.name}." if c.status == "pending" else f"Connected with {c.name}.")
+
+
+def cmd_intro_decline(a: argparse.Namespace, node: Node) -> None:
+    node.decline_intro(a.id)
+    print("Declined.")
+
+
+def cmd_rotate_key(a: argparse.Namespace, node: Node) -> None:
+    if not a.yes:
+        raise NodeError("this replaces your identity key; every contact is told automatically. Re-run with --yes")
+    from .identity import fingerprint
+
+    new_id = node.rotate_key()
+    print(f"New key in place (fingerprint {fingerprint(new_id)}). Contacts are being notified; "
+          "the old key keeps working for 30 days for messages already in flight.")
+
+
+def cmd_remind(a: argparse.Namespace, node: Node) -> None:
+    print(f"Sent {node.send_reminders()} reminder(s).")
 
 
 def cmd_tick(a: argparse.Namespace, node: Node) -> None:
@@ -211,6 +253,7 @@ def cmd_serve(a: argparse.Namespace, node: Node) -> None:
     srv = ConferServer(node, a.host, a.port, public_url=a.public_url or "", relay=a.relay, tick_seconds=a.tick)
     print(f"Confer node {node.name!r} listening on http://{a.host}:{srv.port} (public: {srv.public_url}){' + relay' if a.relay else ''}", flush=True)
     print(f"Calendar feed: {srv.public_url}/calendar/{node.config.get('feed_token')}.ics", flush=True)
+    print(f"Phone inbox:   {srv.ui_url}  (keep this URL private)", flush=True)
     srv.serve_forever()
 
 
@@ -249,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("value", nargs="?")
     s.set_defaults(fn=cmd_config)
 
-    grants_help = f"comma list from {', '.join(GRANTS)} (default plans,files,notes)"
+    grants_help = f"comma list from {', '.join(GRANTS)} (default plans,files,notes,intros)"
     s = sub.add_parser("invite", help="create a one-time invite for a trusted person")
     s.add_argument("name")
     s.add_argument("--grant", help=grants_help)
@@ -294,6 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("decision", choices=sorted(P.DECISIONS))
     s.add_argument("--slots", help="options that work, e.g. 1,3 (default: the ones your calendar shows free)")
     s.add_argument("--suggest", action="append", help="counter time, e.g. 2026-10-03T18:30/90 (repeatable)")
+    s.add_argument("--prefer", help="options you'd rather have, e.g. 2 (must also work)")
     s.add_argument("--note")
     s.set_defaults(fn=cmd_plan_respond)
     s = plan.add_parser("revise")
@@ -324,7 +368,28 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("note", help="send a short message to a contact's agent")
     s.add_argument("to")
     s.add_argument("text")
+    s.add_argument("--ask", action="store_true", help="this is a question; flag it for an answer")
+    s.add_argument("--reply-to", help="message id you're answering")
     s.set_defaults(fn=cmd_note)
+    s = sub.add_parser("introduce", help="vouch for two of your contacts to each other")
+    s.add_argument("a")
+    s.add_argument("b")
+    s.add_argument("--note")
+    s.set_defaults(fn=cmd_introduce)
+    intro = sub.add_parser("intro", help="introductions offered to you").add_subparsers(dest="intro_cmd", required=True)
+    intro.add_parser("list").set_defaults(fn=cmd_intro_list)
+    s = intro.add_parser("accept")
+    s.add_argument("id")
+    s.add_argument("--name", help="what to call them")
+    s.add_argument("--grant", help=grants_help)
+    s.set_defaults(fn=cmd_intro_accept)
+    s = intro.add_parser("decline")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_intro_decline)
+    s = sub.add_parser("rotate-key", help="move to a fresh identity key (contacts follow automatically)")
+    s.add_argument("--yes", action="store_true")
+    s.set_defaults(fn=cmd_rotate_key)
+    sub.add_parser("remind", help="nudge people who haven't answered your plans").set_defaults(fn=cmd_remind)
     sub.add_parser("tick", help="deliver queued messages, poll relay, check deadlines").set_defaults(fn=cmd_tick)
 
     s = sub.add_parser("serve", help="run this node's server")

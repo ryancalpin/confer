@@ -88,10 +88,11 @@ Grants say what *that contact* may do with *my* node:
 | `autoconfirm` | my node answers proposals from my calendar without asking me |
 | `files` | send `file.send` |
 | `notes` | send `note` |
+| `intros` | send `intro.offer` (each introduction still needs my owner's approval) |
 
 Envelopes from non-contacts are refused, except `pair.request`. A pending
 contact (you accepted their invite but they haven't confirmed yet) may only
-send `pair.accept`. `plan.respond`, `plan.final` and `plan.cancel` need no
+send `pair.accept` or `pair.intro`. `plan.respond`, `plan.final` and `plan.cancel` need no
 grant, because they only act on plans that already involve both parties.
 
 ## 5. Pairing
@@ -147,9 +148,10 @@ start converted to that zone, so a weekly 18:00 stays 18:00 local across DST.
 | type | from → to | body |
 |---|---|---|
 | `plan.propose` | organizer → each participant | `{plan}`. A higher `rev` supersedes the earlier one; any other `rev` is ignored. |
-| `plan.respond` | participant → organizer | `{plan_id, rev, decision: accept\|decline\|counter, ok_slots:[idx], note, counter:[{start,end}]}` |
+| `plan.respond` | participant → organizer | `{plan_id, rev, decision: accept\|decline\|counter, ok_slots:[idx], prefer:[idx], note, counter:[{start,end}]}` |
 | `plan.final` | organizer → each participant | `{plan}` with `status: confirmed` and `chosen` |
 | `plan.cancel` | organizer → each participant | `{plan_id, reason}` |
+| `plan.nudge` | organizer → a participant who hasn't answered | `{plan_id, rev, deadline}` |
 
 Receivers MUST check that `plan.organizer == envelope.from` for
 propose/final/cancel, and that the sender is a listed participant for
@@ -170,6 +172,19 @@ occurrences if the plan recurs. Then:
 A participant may decline a confirmed plan at any time. The organizer is
 told, and the plan stays confirmed.
 
+**Tentative holds.** Nodes SHOULD treat times on unresolved plans as busy
+when answering other proposals. For the organizer, that means every
+candidate slot. For a participant, it means the slots they accepted. This
+stops two negotiations running at once from landing on the same evening. A
+plan's own holds are ignored when re-evaluating that plan.
+
+**Reminders.** The organizer MAY send one `plan.nudge` per revision to each
+participant who hasn't answered. Due times:
+- with a deadline: in its last quarter, and at least one hour before it;
+- without a deadline: after a configurable delay (default 24 h).
+
+The receiver ignores a nudge if it has already answered.
+
 ### 6.4 Organizer tally
 
 Let `need` be the number of participants for `all`, or `min(N, participants)`.
@@ -177,7 +192,9 @@ For each slot, count the participants who accepted it.
 
 - **Confirm:** for quorum `all`, once every participant has answered and some
   slot's count equals `need`. For numeric quorum, as soon as some slot's count
-  reaches `need`. The confirmed slot is the earliest such slot. Broadcast
+  reaches `need`. Among eligible slots, pick the one the most participants
+  listed in `prefer` (a subset of their `ok_slots`), breaking ties by
+  earliest start. Broadcast
   `plan.final` to *all* participants (people who didn't pick that slot get an
   invitation to join).
 - **Needs reschedule:** when no slot can still reach `need` even if every
@@ -189,8 +206,54 @@ For each slot, count the participants who accepted it.
 - `file.send {name, mime, sha256, data (base64, ≤10 MiB decoded), note}`.
   Receivers MUST verify `sha256`. They MUST sanitize `name` to a basename.
   They SHOULD store the file under a per-contact directory.
-- `note {text (≤4000 chars), plan_id?}`: a short message for the other
-  person or their agent.
+- `note {msg_id, text (≤4000 chars), plan_id?, reply_to?, expects_reply?}`:
+  a short message for the other person or their agent.
+  - `expects_reply` marks a question.
+  - `reply_to` carries the `msg_id` being answered, which lets agents run
+    simple ask/answer exchanges.
+
+## 7a. Introductions (vouched pairing)
+
+A node that is a contact of both A and B can introduce them, so they never
+have to exchange invite tokens:
+
+1. **Offer.** The introducer I sends
+   `intro.offer {intro_id, note, peer: {id, name, endpoint, relay}}` to A
+   (about B) and to B (about A). `intro_id` is 8–64 alphanumeric characters.
+   A receiver MUST hold the `intros` grant for I. It stores the offer (valid
+   14 days) and asks its owner to approve.
+2. **Approve.** When an owner approves, their node stores the peer as a
+   `pending` contact and sends `pair.intro {intro_id, name, endpoint, relay}`
+   directly to the peer.
+3. **Handle `pair.intro`.** It may come from a non-contact or a pending
+   contact. The receiver MUST find an offer with that `intro_id` whose
+   `peer.id` equals the envelope sender, and then:
+   - **its owner hasn't decided yet:** record that the peer is ready and
+     acknowledge;
+   - **its owner declined:** refuse with `-32001`;
+   - **its owner approved:** activate the contact and reply `pair.accept`.
+4. **Connect.** If an owner approves after the peer is already ready, the
+   contact becomes active at once.
+
+Trust note: you are trusting I's claim that `peer.id` is really B.
+Fingerprints appear in both inboxes so they can be checked.
+
+## 7b. Key rotation
+
+1. **Announce.** The node creates a new keypair N and sends every active
+   contact `key.rotate {new_id: N, ts, proof}`. The envelope is signed with
+   the **old** key. `proof` is N's Ed25519 signature over
+   `canonical({"old": old_id, "new": N, "ts": ts})`, which proves the new key
+   is really held.
+2. **Receive.** The receiver checks `proof` and that `ts` is within the
+   envelope age window. It MUST refuse if N already belongs to another
+   contact. It then re-points every local record from the old id to N.
+3. **Grace period.** The rotating node keeps the old key for 30 days. It
+   opens envelopes still addressed to it and keeps polling relays under it.
+
+Senders MUST deliver each recipient's messages in order, never letting a
+retry of an earlier message be overtaken by a later one. That guarantees
+`key.rotate` arrives before anything signed with the new key.
 
 ## 8. Versioning
 
