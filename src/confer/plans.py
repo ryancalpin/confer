@@ -62,7 +62,7 @@ def new_plan(
         "organizer": organizer,
         "organizer_name": organizer_name,
         "participants": {
-            aid: {"name": name, "status": "invited", "ok_slots": [], "note": "", "counter": []}
+            aid: {"name": name, "status": "invited", "ok_slots": [], "prefer": [], "note": "", "counter": []}
             for aid, name in participants.items()
         },
         "slots": [s.to_wire() for s in slots[:MAX_SLOTS]],
@@ -157,7 +157,8 @@ def slots_of(plan: dict) -> list[Interval]:
     return [Interval.from_wire(s) for s in plan["slots"]]
 
 
-def record_response(plan: dict, participant: str, decision: str, ok_slots: list[int], note: str = "", counter: list[dict] | None = None) -> None:
+def record_response(plan: dict, participant: str, decision: str, ok_slots: list[int], note: str = "",
+                    counter: list[dict] | None = None, prefer: list[int] | None = None) -> None:
     if participant not in plan["participants"]:
         raise PlanError("not a participant of this plan")
     if decision not in DECISIONS:
@@ -169,6 +170,8 @@ def record_response(plan: dict, participant: str, decision: str, ok_slots: list[
     p = plan["participants"][participant]
     p["status"] = {"accept": "accepted", "decline": "declined", "counter": "countered"}[decision]
     p["ok_slots"] = ok if decision == "accept" else []
+    # preferred options are a subset of workable ones; they only break ties between eligible slots
+    p["prefer"] = sorted({i for i in (prefer or []) if i in ok}) if decision == "accept" else []
     p["note"] = str(note)[:1000]
     p["counter"] = [Interval.from_wire(c).to_wire() for c in (counter or [])][:MAX_SLOTS] if decision == "counter" else []
     plan["updated_at"] = time.time()
@@ -184,23 +187,29 @@ def tally(plan: dict, now: float | None = None) -> tuple[str, int | None]:
 
     * quorum "all": confirm the earliest slot every participant accepted, once
       everyone has answered; any decline/counter means reschedule.
-    * quorum N: confirm the earliest slot that N participants accepted as soon
-      as that happens; reschedule if it becomes impossible (or the deadline
-      passes without it).
+    * quorum N: confirm a slot that N participants accepted as soon as that
+      happens; reschedule if it becomes impossible (or the deadline passes
+      without it).
+
+    Among eligible slots, the one the most people marked as *preferred* wins;
+    remaining ties go to the earliest.
     """
     if plan["status"] in ("confirmed", "cancelled"):
         return plan["status"], plan.get("chosen")
     parts = plan["participants"].values()
     need = _required(plan)
     counts = [0] * len(plan["slots"])
+    prefs = [0] * len(plan["slots"])
     for p in parts:
         if p["status"] == "accepted":
             for i in p["ok_slots"]:
                 counts[i] += 1
+            for i in p.get("prefer", []):
+                prefs[i] += 1
     pending = sum(1 for p in parts if p["status"] == "invited")
     best = [i for i, c in enumerate(counts) if c >= need]
     if best and (plan.get("quorum", "all") != "all" or pending == 0):
-        return "confirmed", min(best, key=lambda i: plan["slots"][i]["start"])
+        return "confirmed", min(best, key=lambda i: (-prefs[i], plan["slots"][i]["start"]))
     # can any slot still reach quorum if every pending participant accepts it?
     reachable = any(c + pending >= need for c in counts)
     past_deadline = plan.get("deadline") is not None and (now or time.time()) > plan["deadline"]
@@ -217,7 +226,7 @@ def revise(plan: dict, slots: list[Interval]) -> None:
     plan["status"] = "proposed"
     plan["chosen"] = None
     for p in plan["participants"].values():
-        p.update(status="invited", ok_slots=[], note="", counter=[])
+        p.update(status="invited", ok_slots=[], prefer=[], note="", counter=[], nudged=False)
     plan["updated_at"] = time.time()
 
 
@@ -245,7 +254,7 @@ def describe(plan: dict, tz: str = "UTC") -> str:
     for p in plan["participants"].values():
         extra = ""
         if p.get("status") == "accepted":
-            extra = " options " + ",".join(str(i + 1) for i in p["ok_slots"])
+            extra = " options " + ",".join(str(i + 1) + ("*" if i in p.get("prefer", []) else "") for i in p["ok_slots"])
         if p.get("note"):
             extra += f' — "{p["note"]}"'
         if "status" in p:

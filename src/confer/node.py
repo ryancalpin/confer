@@ -11,6 +11,7 @@ Grants are what a contact may do *with my node*:
   autoconfirm  plans that fit my calendar are accepted without asking me
   files        may send me files (end-to-end encrypted)
   notes        may send me short messages
+  intros       may introduce other people to me (I still approve each one)
 """
 
 from __future__ import annotations
@@ -46,15 +47,17 @@ from .availability import (
     normalize_rrule,
     spread,
 )
-from .envelope import SEEN_TTL_SECONDS, EnvelopeError, MAX_AGE_SECONDS, open_, seal
-from .identity import Identity, b64d, b64e, fingerprint
+from .envelope import SEEN_TTL_SECONDS, EnvelopeError, MAX_AGE_SECONDS, canonical, open_, seal
+from .identity import Identity, b64d, b64e, fingerprint, verify
 from .store import Contact, Store
 from .transport import DeliveryError, HttpTransport
 
 log = logging.getLogger("confer")
 
-GRANTS = ("plans", "autoconfirm", "files", "notes")
-DEFAULT_GRANTS = ["plans", "files", "notes"]
+GRANTS = ("plans", "autoconfirm", "files", "notes", "intros")
+DEFAULT_GRANTS = ["plans", "files", "notes", "intros"]
+KEY_GRACE_SECONDS = 30 * 24 * 3600  # keep answering on a rotated-away key this long
+INTRO_TTL_SECONDS = 14 * 24 * 3600
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_NOTE_CHARS = 4000
 INVITE_PREFIX = "confer1:"
@@ -83,21 +86,37 @@ def parse_grants(spec: str | list[str] | None, base: list[str] | None = None) ->
     return sorted(out)
 
 
-class ConfirmedPlansProvider:
-    """My own confirmed plans count as busy time for future scheduling."""
+class PlansProvider:
+    """My own plans as busy time: confirmed plans I'm attending, plus *tentative
+    holds* — times I've offered (as organizer) or accepted (as participant) on
+    plans that haven't resolved yet — so two concurrent negotiations can't both
+    land on the same evening. ``exclude`` skips the plan being (re)evaluated."""
 
-    def __init__(self, node: "Node"):
+    def __init__(self, node: "Node", exclude: str | None = None):
         self.node = node
+        self.exclude = exclude
 
     def busy(self, start: datetime, end: datetime) -> list[Interval]:
         out: list[Interval] = []
         window = Interval(start, end)
+        holds = bool(self.node.config.get("tentative_holds", True))
         for plan in self.node.store.plans():
-            if plan["status"] != "confirmed" or plan.get("chosen") is None or not self.node._attending(plan):
+            if plan["id"] == self.exclude:
                 continue
-            slot = Interval.from_wire(plan["slots"][plan["chosen"]])
-            out.extend(expand(slot, plan.get("rrule"), plan.get("tz", "UTC"), count=None, window=window))
+            for idx in self._busy_slots(plan, holds):
+                slot = Interval.from_wire(plan["slots"][idx])
+                out.extend(expand(slot, plan.get("rrule"), plan.get("tz", "UTC"), count=None, window=window))
         return out
+
+    def _busy_slots(self, plan: dict, holds: bool) -> list[int]:
+        if plan["status"] == "confirmed" and plan.get("chosen") is not None and self.node._attending(plan):
+            return [plan["chosen"]]
+        if holds and plan["status"] == "proposed":
+            if plan.get("role") == "organizer":
+                return list(range(len(plan["slots"])))
+            if plan.get("my_status") == "accepted":
+                return list(plan.get("my_ok_slots", []))
+        return []
 
 
 class Node:
@@ -115,6 +134,12 @@ class Node:
             raise NodeError(f"no Confer node at {self.home} — run `confer init` first")
         self.config: dict[str, Any] = json.loads(cfg_path.read_text())
         self.identity = Identity.load(self.home / "identity.key")
+        # after `rotate_key`, the previous key keeps working for a grace period so
+        # messages already in flight (or queued at peers) can still be opened
+        self.old_identity: Identity | None = None
+        old_path = self.home / "identity.old.key"
+        if old_path.exists() and clock() - float(self.config.get("rotated_at", 0)) < KEY_GRACE_SECONDS:
+            self.old_identity = Identity.load(old_path)
         self.store = Store(self.home / "state.db")
         self.transport = transport or HttpTransport()
         self.clock = clock
@@ -145,6 +170,7 @@ class Node:
             "notify_webhook": "",
             "notify_cmd": "",
             "feed_token": secrets.token_urlsafe(18),
+            "tentative_holds": True,
         }
         (home / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
         return cls(home, **kw)
@@ -166,7 +192,7 @@ class Node:
     def now(self) -> float:
         return self.clock()
 
-    def availability(self) -> Availability:
+    def availability(self, exclude_plan: str | None = None) -> Availability:
         base = self._provider
         if base is None:
             src = self.config.get("calendar", "")
@@ -177,7 +203,7 @@ class Node:
             else:
                 base = ICSProvider(src)
         return Availability(
-            CompositeProvider(base, ConfirmedPlansProvider(self)),
+            CompositeProvider(base, PlansProvider(self, exclude=exclude_plan)),
             Hours.from_config(self.config),
             int(self.config.get("buffer_minutes", 0)),
         )
@@ -278,6 +304,81 @@ class Node:
         })
         return contact
 
+    # --------------------------------------------------------- introductions
+    def introduce(self, a: str, b: str, note: str = "") -> str:
+        """Vouch for two of your contacts to each other. Each side's owner approves;
+        once both have, their agents pair directly — no token to pass around."""
+        ca, cb = self._active_contact(a), self._active_contact(b)
+        if ca.agent_id == cb.agent_id:
+            raise NodeError("introduce two different people")
+        intro_id = secrets.token_hex(12)
+        for to, peer in ((ca, cb), (cb, ca)):
+            self._send(to, "intro.offer", {
+                "intro_id": intro_id, "note": note[:500],
+                "peer": {"id": peer.agent_id, "name": peer.name, "endpoint": peer.endpoint, "relay": peer.relay},
+            }, kick=False)
+        self.kick()
+        return intro_id
+
+    def accept_intro(self, intro_id: str, *, name: str | None = None, grants: str | list[str] | None = None) -> Contact:
+        intro = self._open_intro(intro_id)
+        contact = Contact(
+            agent_id=intro["peer_id"], name=self._unique_name(name or intro["peer_name"], intro["peer_id"]),
+            endpoint=intro["endpoint"], relay=intro["relay"], grants=parse_grants(grants),
+            status="active" if intro["peer_ready"] else "pending", created_at=self.now(),
+        )
+        self.store.upsert_contact(contact)
+        intro["status"] = "done" if intro["peer_ready"] else "accepted"
+        self.store.save_intro(intro)
+        self.store.close_inbox(ref=intro_id)
+        self._send(contact, "pair.intro", {"intro_id": intro_id, "name": self.name,
+                                           "endpoint": self.config.get("endpoint", ""), "relay": self.config.get("relay", "")})
+        if intro["peer_ready"]:
+            self._connected_via_intro(contact, intro)
+        return contact
+
+    def decline_intro(self, intro_id: str) -> None:
+        intro = self._open_intro(intro_id)
+        intro["status"] = "declined"
+        self.store.save_intro(intro)
+        self.store.close_inbox(ref=intro_id)
+
+    def intros(self) -> list[dict]:
+        return self.store.intros()
+
+    def _open_intro(self, intro_id: str) -> dict:
+        intro = self.store.intro(intro_id)
+        if not intro or intro["status"] != "offered":
+            raise NodeError(f"no pending introduction {intro_id!r}")
+        if intro["expires_at"] < self.now():
+            raise NodeError("that introduction has expired")
+        return intro
+
+    def _connected_via_intro(self, contact: Contact, intro: dict) -> None:
+        via = self.store.contact(intro["introducer"])
+        self._inbox("pair", f"🤝 Connected with {contact.name} (introduced by {via.name if via else 'a contact'}; "
+                    f"fingerprint {fingerprint(contact.agent_id)}). Grants: {', '.join(contact.grants) or 'none'}.", contact=contact.agent_id)
+
+    # ---------------------------------------------------------- key rotation
+    def rotate_key(self) -> str:
+        """Move this node to a fresh keypair. Every contact gets a ``key.rotate``
+        signed by the old key *and* proving possession of the new one; the old key
+        keeps decrypting in-flight messages for 30 days. Returns the new agent id."""
+        old, new = self.identity, Identity.generate()
+        ts = int(self.now())
+        proof = b64e(new.sign(canonical({"old": old.agent_id, "new": new.agent_id, "ts": ts})))
+        for c in self.store.contacts():
+            if c.status == "active":
+                self._send(c, "key.rotate", {"new_id": new.agent_id, "ts": ts, "proof": proof}, kick=False)
+        old.save(self.home / "identity.old.key")
+        new.save(self.home / "identity.key")
+        self.config["rotated_at"] = self.now()
+        self.save_config()
+        self.store.rename_agent(old.agent_id, new.agent_id)  # my own plans
+        self.identity, self.old_identity = new, old
+        self.kick()
+        return new.agent_id
+
     # --------------------------------------------------------------- plans
     def create_plan(
         self,
@@ -324,6 +425,7 @@ class Node:
             tz=self.tz,
         )
         plan["role"] = "organizer"
+        plan["proposed_at"] = self.now()
         self.store.save_plan(plan)
         for c in people:
             self._send(c, "plan.propose", {"plan": P.wire_view(plan)}, kick=False)
@@ -345,8 +447,9 @@ class Node:
         return plan.get("my_status") == "accepted" and plan.get("chosen") in plan.get("my_ok_slots", [])
 
     def respond(self, plan_id: str, decision: str, *, slots: list[int] | None = None, note: str = "",
-                counter: list[Interval] | None = None, _kick: bool = True) -> dict:
-        """Participant answers a proposal. ``slots`` are 0-based option indexes."""
+                counter: list[Interval] | None = None, prefer: list[int] | None = None, _kick: bool = True) -> dict:
+        """Participant answers a proposal. ``slots`` are 0-based option indexes;
+        ``prefer`` marks the ones you'd *rather* have (a subset of ``slots``)."""
         with self.store.transaction():
             plan = self._plan(plan_id)
             if plan.get("role") != "participant":
@@ -361,9 +464,10 @@ class Node:
                     raise NodeError("say which options work (none of them look free on your calendar)")
             else:
                 ok = []
+            preferred = sorted(set(prefer or []) & set(ok))
             if decision == "counter" and not counter:
                 raise NodeError("a counter needs at least one suggested time")
-            plan.update(my_status={"accept": "accepted", "decline": "declined", "counter": "countered"}[decision], my_ok_slots=ok)
+            plan.update(my_status={"accept": "accepted", "decline": "declined", "counter": "countered"}[decision], my_ok_slots=ok, my_prefer=preferred)
             self.store.save_plan(plan)
             self.store.close_inbox(ref=plan["id"], kind="plan.invite")
         organizer = self.store.contact(plan["organizer"])
@@ -374,6 +478,7 @@ class Node:
             "rev": plan["rev"],
             "decision": decision,
             "ok_slots": ok,
+            "prefer": preferred,
             "note": note[:1000],
             "counter": [c.to_wire() for c in counter or []],
         }, kick=_kick)
@@ -391,10 +496,11 @@ class Node:
                 dur = timedelta(minutes=duration_minutes) if duration_minutes else first.end - first.start
                 start = window_start or datetime.fromtimestamp(self.now(), tz=UTC) + timedelta(hours=1)
                 end = window_end or start + timedelta(days=7)
-                slots = spread(self.availability().candidates(start, end, dur, between=between, rrule=plan.get("rrule")), candidates)
+                slots = spread(self.availability(exclude_plan=plan["id"]).candidates(start, end, dur, between=between, rrule=plan.get("rrule")), candidates)
                 if not slots:
                     raise NodeError("you have no free time matching that window")
             P.revise(plan, slots)
+            plan["proposed_at"] = self.now()
             self.store.save_plan(plan)
             self.store.close_inbox(ref=plan["id"])
         self._broadcast(plan, "plan.propose", {"plan": P.wire_view(plan)})
@@ -444,10 +550,41 @@ class Node:
                         f"Revise it: confer plan revise {plan['id']}", ref=plan["id"], actionable=True,
                         payload={"counters": counters})
 
+    def _nudge_due(self, plan: dict) -> bool:
+        """Remind stragglers once: in the last quarter before the deadline (at least
+        1h before it), or after ``nudge_after_hours`` (default 24) with no deadline."""
+        now, since = self.now(), plan.get("proposed_at", plan["created_at"])
+        if plan.get("deadline"):
+            lead = max(3600.0, (plan["deadline"] - since) * 0.25)
+            return plan["deadline"] - lead <= now < plan["deadline"]
+        return now - since >= float(self.config.get("nudge_after_hours", 24)) * 3600
+
+    def send_reminders(self) -> int:
+        """Organizer: nudge participants who haven't answered. Returns how many were nudged."""
+        sent = 0
+        for plan in self.store.plans():
+            if plan.get("role") != "organizer" or plan["status"] != "proposed" or not self._nudge_due(plan):
+                continue
+            with self.store.transaction():
+                fresh = self._plan(plan["id"])
+                waiting = [aid for aid, p in fresh["participants"].items() if p["status"] == "invited" and not p.get("nudged")]
+                for aid in waiting:
+                    fresh["participants"][aid]["nudged"] = True
+                    c = self.store.contact(aid)
+                    if c:
+                        self._send(c, "plan.nudge", {"plan_id": fresh["id"], "rev": fresh["rev"], "deadline": fresh.get("deadline")}, kick=False)
+                        sent += 1
+                if waiting:
+                    self.store.save_plan(fresh)
+        if sent:
+            self.kick()
+        return sent
+
     def tick(self) -> None:
-        """Periodic work: relay pickup, outbox retries, plan deadlines."""
+        """Periodic work: relay pickup, outbox retries, reminders, plan deadlines."""
         self.poll_relay()
         self.flush()
+        self.send_reminders()
         for plan in self.store.plans():
             if plan.get("role") == "organizer" and plan["status"] == "proposed" and plan.get("deadline") and self.now() > plan["deadline"]:
                 with self.store.transaction():
@@ -470,10 +607,21 @@ class Node:
             "note": note[:1000],
         })
 
-    def send_note(self, to: str, text: str, plan_id: str = "") -> None:
+    def send_note(self, to: str, text: str, plan_id: str = "", *, reply_to: str = "", expects_reply: bool = False) -> str:
+        """Send a short message to a contact's agent. Returns its ``msg_id``; a reply
+        arrives as a ``note`` inbox item whose payload has ``reply_to == msg_id``."""
         if not text.strip():
             raise NodeError("empty note")
-        self._send(self._active_contact(to), "note", {"text": text[:MAX_NOTE_CHARS], "plan_id": plan_id})
+        msg_id = secrets.token_hex(8)
+        self._send(self._active_contact(to), "note", {
+            "msg_id": msg_id, "text": text[:MAX_NOTE_CHARS], "plan_id": plan_id,
+            "reply_to": reply_to[:32], "expects_reply": bool(expects_reply),
+        })
+        return msg_id
+
+    def replies(self, msg_id: str) -> list[dict]:
+        """Answers received to a note this node sent."""
+        return [i for i in self.inbox(include_done=True) if i["kind"] == "note" and i["payload"].get("reply_to") == msg_id]
 
     # --------------------------------------------------------------- inbox
     def inbox(self, include_done: bool = False) -> list[dict]:
@@ -536,8 +684,14 @@ class Node:
         if not self._flush_lock.acquire(blocking=False):
             return 0
         sent = 0
+        blocked: set[str] = set()  # keep per-recipient order: never overtake an earlier message
         try:
-            for out_id, to_id, env, attempts in list(self.store.due(self.now())):
+            for out_id, to_id, env, attempts, next_at in list(self.store.queue()):
+                if to_id in blocked:
+                    continue
+                if next_at > self.now():
+                    blocked.add(to_id)
+                    continue
                 try:
                     self._deliver(to_id, env)
                     self.store.delivered(out_id)
@@ -552,6 +706,7 @@ class Node:
                     else:
                         delay = min(3600, 15 * 2 ** min(attempts, 8))
                         self.store.retry_later(out_id, attempts + 1, self.now() + delay, str(exc))
+                        blocked.add(to_id)
         finally:
             self._flush_lock.release()
         return sent
@@ -560,8 +715,14 @@ class Node:
         relay = self.config.get("relay")
         if not relay:
             return 0
+        n = self._poll_relay_as(relay, self.identity)
+        if self.old_identity:
+            n += self._poll_relay_as(relay, self.old_identity)
+        return n
+
+    def _poll_relay_as(self, relay: str, ident: Identity) -> int:
         try:
-            envs = self.transport.relay_fetch(relay, self.identity)
+            envs = self.transport.relay_fetch(relay, ident)
         except DeliveryError as exc:
             log.warning("relay poll failed: %s", exc)
             return 0
@@ -575,19 +736,24 @@ class Node:
                 done.append(env.get("id", ""))
             except Exception:  # transient: leave it in the mailbox for next poll
                 log.exception("error handling relayed envelope")
-        self.transport.relay_ack(relay, self.identity, [d for d in done if d])
+        self.transport.relay_ack(relay, ident, [d for d in done if d])
         return len(done)
 
     # ----------------------------------------------------------- receiving
     def receive(self, env: dict) -> dict:
         """Authenticate, de-duplicate, authorize and dispatch one envelope."""
-        opened = open_(self.identity, env, now=self.now())
+        ident = self.identity
+        if self.old_identity and isinstance(env, dict) and env.get("to") == self.old_identity.agent_id:
+            ident = self.old_identity
+        opened = open_(ident, env, now=self.now())
         if not self.store.mark_seen(opened.id, SEEN_TTL_SECONDS, self.now()):
             return {"ok": True, "duplicate": True}
         try:
             contact = self.store.contact(opened.sender)
             if opened.type == "pair.request":
                 self._on_pair_request(opened.sender, contact, opened.body)
+            elif opened.type == "pair.intro" and (contact is None or contact.status == "pending"):
+                self._on_pair_intro(opened.sender, contact, opened.body)
             elif contact is None:
                 raise Rejected("unknown sender — pair first")
             elif contact.status == "pending" and opened.type != "pair.accept":
@@ -615,6 +781,10 @@ class Node:
             "plan.respond": self._on_plan_respond,
             "plan.final": self._on_plan_final,
             "plan.cancel": self._on_plan_cancel,
+            "plan.nudge": self._on_plan_nudge,
+            "intro.offer": self._on_intro_offer,
+            "pair.intro": lambda c, b: None,  # already connected: nothing to do
+            "key.rotate": self._on_key_rotate,
             "file.send": self._on_file,
             "note": self._on_note,
         }
@@ -661,7 +831,7 @@ class Node:
             if existing and existing["rev"] >= wire["rev"]:
                 return
             slots = P.slots_of(wire)
-            suggested = self.availability().free_indices(slots, wire["rrule"], wire["tz"])
+            suggested = self.availability(exclude_plan=wire["id"]).free_indices(slots, wire["rrule"], wire["tz"])
             plan = {**wire, "role": "participant", "my_status": "invited", "my_ok_slots": [], "suggested": suggested,
                     "created_at": existing["created_at"] if existing else self.now(), "updated_at": self.now()}
             self.store.save_plan(plan)
@@ -698,7 +868,8 @@ class Node:
                     self.store.save_plan(plan)
                     self._inbox("plan.dropout", f"⚠️ {contact.name} can no longer make {plan['title']!r}.", ref=plan["id"], contact=contact.agent_id, actionable=True)
                 return
-            P.record_response(plan, contact.agent_id, decision, list(body.get("ok_slots") or []), str(body.get("note", "")), counter)
+            P.record_response(plan, contact.agent_id, decision, list(body.get("ok_slots") or []), str(body.get("note", "")), counter,
+                              prefer=list(body.get("prefer") or []))
             self.store.save_plan(plan)
             if decision == "counter":
                 sugg = "; ".join(self._fmt_slot(c) for c in plan["participants"][contact.agent_id]["counter"])
@@ -739,6 +910,84 @@ class Node:
         self._inbox("plan.cancelled", f"❌ {contact.name} cancelled {plan['title']!r}{reason}.", ref=plan["id"], contact=contact.agent_id)
         self._write_calendar()
 
+    def _on_intro_offer(self, contact: Contact, body: dict) -> None:
+        if not contact.can("intros"):
+            raise Rejected(f"{self.name} hasn't allowed introductions from you")
+        peer = body.get("peer") or {}
+        peer_id, intro_id = str(peer.get("id", "")), str(body.get("intro_id", ""))
+        fingerprint(peer_id)  # validates the key
+        if not (8 <= len(intro_id) <= 64 and intro_id.isalnum()):
+            raise Rejected("bad introduction id")
+        if peer_id in (self.identity.agent_id, contact.agent_id):
+            raise Rejected("bad introduction")
+        existing = self.store.contact(peer_id)
+        if existing and existing.status == "active":
+            return  # already connected
+        prior = self.store.intro(intro_id)
+        if prior and (prior["peer_id"] != peer_id or prior["introducer"] != contact.agent_id):
+            raise Rejected("introduction id collision")
+        if prior:
+            return
+        name = str(peer.get("name", ""))[:60] or "contact"
+        self.store.save_intro({
+            "intro_id": intro_id, "peer_id": peer_id, "peer_name": name,
+            "endpoint": _clean_url(peer.get("endpoint")), "relay": _clean_url(peer.get("relay")),
+            "introducer": contact.agent_id, "note": str(body.get("note", ""))[:500], "status": "offered",
+            "peer_ready": 0, "expires_at": self.now() + INTRO_TTL_SECONDS, "created_at": self.now(),
+        })
+        note = f' — "{str(body.get("note"))[:200]}"' if body.get("note") else ""
+        self._inbox("intro", f"👋 {contact.name} wants to introduce you to {name} (fingerprint {fingerprint(peer_id)}){note}. "
+                    f"confer intro accept {intro_id}  (or decline)", ref=intro_id, contact=contact.agent_id, actionable=True)
+
+    def _on_pair_intro(self, sender: str, existing: Contact | None, body: dict) -> None:
+        intro = self.store.intro(str(body.get("intro_id", "")))
+        if not intro or intro["peer_id"] != sender or intro["expires_at"] < self.now():
+            raise Rejected("no matching introduction")
+        if intro["status"] == "declined":
+            raise Rejected("introduction declined")
+        if intro["status"] == "offered":  # my owner hasn't decided yet; remember the peer is willing
+            intro["peer_ready"] = 1
+            self.store.save_intro(intro)
+            return
+        if existing is None:
+            raise Rejected("no matching introduction")
+        existing.status = "active"
+        existing.endpoint = _clean_url(body.get("endpoint")) or existing.endpoint
+        existing.relay = _clean_url(body.get("relay")) or existing.relay
+        self.store.upsert_contact(existing)
+        intro["status"] = "done"
+        self.store.save_intro(intro)
+        self._send(existing, "pair.accept", {"name": self.name, "endpoint": self.config.get("endpoint", ""), "relay": self.config.get("relay", "")})
+        self._connected_via_intro(existing, intro)
+
+    def _on_key_rotate(self, contact: Contact, body: dict) -> None:
+        new_id, ts = str(body.get("new_id", "")), body.get("ts")
+        fingerprint(new_id)
+        if not isinstance(ts, int) or abs(self.now() - ts) > MAX_AGE_SECONDS:
+            raise Rejected("stale key rotation")
+        binding = canonical({"old": contact.agent_id, "new": new_id, "ts": ts})
+        if not verify(new_id, binding, b64d(str(body.get("proof", "")))):
+            raise Rejected("new key did not sign the rotation")
+        if self.store.contact(new_id):
+            raise Rejected("that key already belongs to a contact")
+        self.store.rename_agent(contact.agent_id, new_id)
+        self._inbox("key", f"🔑 {contact.name}'s agent moved to a new key (fingerprint {fingerprint(new_id)}). "
+                    "This is normal after a key rotation; if they didn't do it, remove them.", contact=new_id)
+
+    def _on_plan_nudge(self, contact: Contact, body: dict) -> None:
+        plan = self.store.plan(str(body.get("plan_id", "")))
+        if not plan or plan.get("organizer") != contact.agent_id:
+            raise Rejected("unknown plan")
+        if body.get("rev") != plan["rev"] or plan["status"] != "proposed" or plan.get("my_status") != "invited":
+            return  # already answered or superseded
+        due = ""
+        if isinstance(body.get("deadline"), (int, float)):
+            from zoneinfo import ZoneInfo
+
+            due = " before " + datetime.fromtimestamp(body["deadline"], ZoneInfo(self.tz)).strftime("%a %H:%M")
+        self._inbox("plan.reminder", f"⏰ {contact.name} is waiting on your answer for {plan['title']!r}{due}. "
+                    f"confer plan respond {plan['id']} accept|decline", ref=plan["id"], contact=contact.agent_id, actionable=True)
+
     def _on_file(self, contact: Contact, body: dict) -> None:
         if not contact.can("files"):
             raise Rejected(f"{self.name} hasn't allowed files from you")
@@ -759,7 +1008,12 @@ class Node:
         if not contact.can("notes"):
             raise Rejected(f"{self.name} hasn't allowed notes from you")
         text = str(body.get("text", ""))[:MAX_NOTE_CHARS]
-        self._inbox("note", f"💬 {contact.name}: {text}", ref=str(body.get("plan_id", ""))[:64], contact=contact.agent_id, payload={"text": text})
+        msg_id, reply_to = str(body.get("msg_id", ""))[:32], str(body.get("reply_to", ""))[:32]
+        asks = bool(body.get("expects_reply"))
+        verb = "replied" if reply_to else ("asks" if asks else "says")
+        hint = f" (reply: confer note {contact.name!r} \"...\" --reply-to {msg_id})" if asks and msg_id else ""
+        self._inbox("note", f"💬 {contact.name} {verb}: {text}{hint}", ref=str(body.get("plan_id", ""))[:64], contact=contact.agent_id,
+                    actionable=asks, payload={"text": text, "msg_id": msg_id, "reply_to": reply_to, "expects_reply": asks})
 
     # ------------------------------------------------------------ calendar
     def _fmt_slot(self, slot: dict) -> str:

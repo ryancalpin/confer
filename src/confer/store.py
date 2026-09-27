@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS mailbox (          -- relay role only
     stored_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS mailbox_to ON mailbox(to_id, stored_at);
+CREATE TABLE IF NOT EXISTS intros (           -- introductions offered TO me
+    intro_id    TEXT PRIMARY KEY,
+    peer_id     TEXT NOT NULL,
+    peer_name   TEXT NOT NULL,
+    endpoint    TEXT NOT NULL DEFAULT '',
+    relay       TEXT NOT NULL DEFAULT '',
+    introducer  TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL,                  -- offered | accepted | declined | done
+    peer_ready  INTEGER NOT NULL DEFAULT 0,     -- the peer already accepted their side
+    expires_at  REAL NOT NULL,
+    created_at  REAL NOT NULL
+);
 """
 
 
@@ -226,6 +239,11 @@ class Store:
         for r in self._q("SELECT * FROM outbox WHERE next_at<=? ORDER BY id", (now,)):
             yield r["id"], r["to_id"], json.loads(r["envelope"]), r["attempts"]
 
+    def queue(self) -> Iterator[tuple[int, str, dict, int, float]]:
+        """Whole outbox in send order: (id, to_id, envelope, attempts, next_at)."""
+        for r in self._q("SELECT * FROM outbox ORDER BY id"):
+            yield r["id"], r["to_id"], json.loads(r["envelope"]), r["attempts"], r["next_at"]
+
     def delivered(self, out_id: int) -> None:
         self._x("DELETE FROM outbox WHERE id=?", (out_id,))
 
@@ -234,6 +252,36 @@ class Store:
 
     def outbox(self) -> list[dict]:
         return [dict(r) | {"envelope": None} for r in self._q("SELECT * FROM outbox ORDER BY id")]
+
+    # introductions ---------------------------------------------------------
+    def save_intro(self, intro: dict) -> None:
+        cols = ("intro_id", "peer_id", "peer_name", "endpoint", "relay", "introducer", "note", "status", "peer_ready", "expires_at", "created_at")
+        self._x(
+            f"INSERT INTO intros({','.join(cols)}) VALUES({','.join('?' * len(cols))}) ON CONFLICT(intro_id) DO UPDATE SET "
+            + ", ".join(f"{c}=excluded.{c}" for c in cols[1:]),
+            tuple(intro[c] for c in cols),
+        )
+
+    def intro(self, intro_id: str) -> dict | None:
+        rows = self._q("SELECT * FROM intros WHERE intro_id=?", (intro_id,))
+        return dict(rows[0]) if rows else None
+
+    def intros(self) -> list[dict]:
+        return [dict(r) for r in self._q("SELECT * FROM intros ORDER BY created_at DESC")]
+
+    # key rotation ----------------------------------------------------------
+    def rename_agent(self, old: str, new: str) -> None:
+        """A contact (or this node) moved to a new key: re-point every local record.
+        Agent ids are 43-char base64url public keys, so a textual swap inside plan
+        JSON can't hit anything else."""
+        with self._lock:
+            self._db.execute("UPDATE contacts SET agent_id=? WHERE agent_id=?", (new, old))
+            self._db.execute("UPDATE outbox SET to_id=? WHERE to_id=?", (new, old))
+            self._db.execute("UPDATE inbox SET contact=? WHERE contact=?", (new, old))
+            self._db.execute("UPDATE intros SET peer_id=? WHERE peer_id=?", (new, old))
+            self._db.execute("UPDATE intros SET introducer=? WHERE introducer=?", (new, old))
+            for r in self._db.execute("SELECT id, data FROM plans WHERE instr(data, ?) > 0", (old,)).fetchall():
+                self._db.execute("UPDATE plans SET data=? WHERE id=?", (r["data"].replace(old, new), r["id"]))
 
     # relay mailbox ---------------------------------------------------------
     def mailbox_put(self, env: dict, now: float, per_recipient_cap: int) -> bool:

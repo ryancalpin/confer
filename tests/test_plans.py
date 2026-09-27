@@ -78,3 +78,19 @@ def test_hostile_recurrence_is_refused(rrule):
     wire["rrule"] = rrule
     with pytest.raises(P.PlanError, match="rrule"):
         P.validate_wire_plan(wire, organizer="org")
+
+
+def test_preferences_break_ties_between_eligible_slots():
+    plan = make(n=3)
+    P.record_response(plan, "p0", "accept", [0, 1, 2], prefer=[2])
+    P.record_response(plan, "p1", "accept", [0, 2], prefer=[2, 9])  # 9 ignored (not workable)
+    P.record_response(plan, "p2", "accept", [0, 1, 2])
+    assert P.tally(plan) == ("confirmed", 2)  # later slot, but two people prefer it
+    assert plan["participants"]["p1"]["prefer"] == [2]
+
+
+def test_without_preferences_earliest_wins():
+    plan = make(n=2)
+    P.record_response(plan, "p0", "accept", [1, 2])
+    P.record_response(plan, "p1", "accept", [1, 2])
+    assert P.tally(plan) == ("confirmed", 1)
