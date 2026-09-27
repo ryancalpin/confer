@@ -58,6 +58,7 @@ GRANTS = ("plans", "autoconfirm", "files", "notes", "intros")
 DEFAULT_GRANTS = ["plans", "files", "notes", "intros"]
 KEY_GRACE_SECONDS = 30 * 24 * 3600  # keep answering on a rotated-away key this long
 INTRO_TTL_SECONDS = 14 * 24 * 3600
+MAX_PENDING_INTROS = 20  # per introducer
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_NOTE_CHARS = 4000
 INVITE_PREFIX = "confer1:"
@@ -487,6 +488,7 @@ class Node:
             plan.update(my_status={"accept": "accepted", "decline": "declined", "counter": "countered"}[decision], my_ok_slots=ok, my_prefer=preferred)
             self.store.save_plan(plan)
             self.store.close_inbox(ref=plan["id"], kind="plan.invite")
+            self.store.close_inbox(ref=plan["id"], kind="plan.reminder")
         organizer = self.store.contact(plan["organizer"])
         if not organizer:
             raise NodeError("the organizer is no longer a contact")
@@ -947,6 +949,9 @@ class Node:
             raise Rejected("introduction id collision")
         if prior:
             return
+        pending = [i for i in self.store.intros() if i["introducer"] == contact.agent_id and i["status"] == "offered" and i["expires_at"] > self.now()]
+        if len(pending) >= MAX_PENDING_INTROS:
+            raise Rejected("too many pending introductions from you")
         name = str(peer.get("name", ""))[:60] or "contact"
         self.store.save_intro({
             "intro_id": intro_id, "peer_id": peer_id, "peer_name": name,
@@ -989,6 +994,8 @@ class Node:
             raise Rejected("new key did not sign the rotation")
         if self.store.contact(new_id):
             raise Rejected("that key already belongs to a contact")
+        if new_id in (self.identity.agent_id, self.old_identity.agent_id if self.old_identity else None):
+            raise Rejected("rotation target collides with this node's own key")
         self.store.rename_agent(contact.agent_id, new_id)
         self._inbox("key", f"🔑 {contact.name}'s agent moved to a new key (fingerprint {fingerprint(new_id)}). "
                     "This is normal after a key rotation; if they didn't do it, remove them.", contact=new_id)
@@ -999,6 +1006,8 @@ class Node:
             raise Rejected("unknown plan")
         if body.get("rev") != plan["rev"] or plan["status"] != "proposed" or plan.get("my_status") != "invited":
             return  # already answered or superseded
+        if any(i["kind"] == "plan.reminder" and i["ref"] == plan["id"] for i in self.inbox()):
+            return  # one open reminder per plan, however often the organizer nudges
         due = ""
         if isinstance(body.get("deadline"), (int, float)):
             from zoneinfo import ZoneInfo

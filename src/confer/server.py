@@ -17,6 +17,7 @@ TLS protects metadata; it is not what keeps message contents private.
 from __future__ import annotations
 
 import hmac
+import re
 import json
 import logging
 import secrets
@@ -238,7 +239,9 @@ class _Handler(BaseHTTPRequestHandler):
         return self.server.confer  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        log.debug("%s " + fmt, self.client_address[0], *args)
+        # secret-token paths (phone inbox, calendar feed) must never reach logs
+        line = re.sub(r"/(ui|calendar)/[^/\s?\"]+", r"/\1/[redacted]", fmt % args)
+        log.debug("%s %s", self.client_address[0], line)
 
     def _send(self, code: int, payload: Any, ctype: str = "application/json") -> None:
         raw = payload if isinstance(payload, bytes) else (payload.encode() if isinstance(payload, str) else json.dumps(payload).encode())

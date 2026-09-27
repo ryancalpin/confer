@@ -144,3 +144,34 @@ def test_delivery_to_a_peer_stays_in_order(net):
     alice.flush()
     wait_for(lambda: len(items(bob, "note")) == 3, what="all notes")
     assert [i["payload"]["text"] for i in items(bob, "note")] == ["msg 0", "msg 1", "msg 2"]
+
+
+def test_nudge_spam_and_intro_flood_are_bounded(net):
+    from confer import node as N
+
+    org, a = net.node("org"), net.node("a")
+    net.pair(org, a, b_grants="plans,intros")
+    plan = org.create_plan("Party", ["a"], slots=[slot(8, 20)])
+    wait_for(lambda: a.store.plan(plan["id"]), what="plan")
+    c = org.store.contact(a.identity.agent_id)
+    for _ in range(5):
+        org._send(c, "plan.nudge", {"plan_id": plan["id"], "rev": 1})
+    wait_for(lambda: items(a, "plan.reminder"), what="reminder")
+    wait_for(lambda: not org.store.outbox(), what="all delivered")
+    assert len(items(a, "plan.reminder")) == 1
+    a.respond(plan["id"], "accept")
+    assert not items(a, "plan.reminder")  # answering closes it
+    for i in range(N.MAX_PENDING_INTROS + 2):
+        org._send(c, "intro.offer", {"intro_id": f"intro{i:04d}x", "peer": {"id": Identity.generate().agent_id, "name": f"p{i}"}})
+    wait_for(lambda: len(items(org, "delivery.failed")) == 2, what="flood refused")
+    assert len(a.intros()) == N.MAX_PENDING_INTROS
+
+
+def test_secret_paths_are_not_logged(net, caplog):
+    import logging
+    import urllib.request
+
+    alice = net.node("alice")
+    with caplog.at_level(logging.DEBUG, logger="confer.server"):
+        urllib.request.urlopen(f"{alice.config['endpoint']}/ui/{alice.config['ui_token']}").read()
+    assert alice.config["ui_token"] not in caplog.text and "/ui/[redacted]" in caplog.text
