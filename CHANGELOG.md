@@ -9,7 +9,7 @@
   - polls;
   - a linked packing list and trip budget.
   - Trip days count as busy time, and the trip and its itinerary appear in the calendar feed.
-- **Integrations**: a single tool catalog (37 tools) drives:
+- **Integrations**: a single tool catalog (39 tools) drives:
   - MCP over stdio or streamable HTTP;
   - a REST API (`confer api enable`) with OpenAPI 3.1 and a `Confer-Human-Approved` header for sensitive tools;
   - function-calling exports (`confer tools export --format openai|anthropic|gemini|mcp|openapi`);

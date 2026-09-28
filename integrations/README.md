@@ -1,7 +1,7 @@
 # Plug Confer into any agent or harness
 
 Every surface below is generated from one tool catalog (`src/confer/tools.py`,
-37 tools), so they all behave the same way. Tools that act on the human's behalf
+39 tools), so they all behave the same way. Tools that act on the human's behalf
 are marked **needs the human's OK**:
 - in MCP, via `annotations.destructiveHint` (read-only tools also carry `readOnlyHint`);
 - in the exported schemas, as a `[needs the human's OK]` description prefix;

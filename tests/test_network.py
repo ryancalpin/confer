@@ -237,3 +237,14 @@ def test_calendar_lines_are_folded_and_naive_until_is_normalized(net):
     assert "DTSTART;TZID=America/Chicago:20310306T130000" in ics
     unfolded = ics.replace("\r\n ", "")
     assert "ünïcødé" in unfolded
+
+
+def test_generated_options_are_never_in_the_past(net):
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    plan = alice.create_plan("Coffee", ["bob"], window_start=today, window_end=today + timedelta(days=3), duration_minutes=30)
+    assert all(datetime.fromisoformat(s["start"].replace("Z", "+00:00")).timestamp() > time.time() for s in plan["slots"])

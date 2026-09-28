@@ -510,6 +510,12 @@ def confer_answer_money(node: "Node", entry_id: str, accept: bool, note: str = "
     return {"status": node.answer_entry(entry_id, accept, note)["status"]}
 
 
+@tool(human_ok=True)
+def confer_cancel_money(node: "Node", entry_id: str) -> dict:
+    """Withdraw an expense share or payment the human recorded (it only gives up money owed to them)."""
+    return {"status": node.cancel_entry(entry_id)["status"]}
+
+
 # ---------------------------------------------------------------- presence
 @tool(human_ok=True)
 def confer_share_status(node: "Node", to_contacts: list[str] | None = None, plan_id: str = "", text: str = "",
@@ -518,6 +524,13 @@ def confer_share_status(node: "Node", to_contacts: list[str] | None = None, plan
     """Share a status ('running late'), ETA and/or location with contacts or everyone in a plan; expires (default 2h)."""
     return {"sent_to": node.share_status(to_contacts, plan_id=plan_id, text=text, eta_minutes=eta_minutes, lat=lat, lon=lon,
                                          ttl_minutes=ttl_minutes)}
+
+
+@tool()
+def confer_stop_sharing(node: "Node", to_contacts: list[str]) -> dict:
+    """Stop showing the human's status/ETA/location to these contacts right away."""
+    node.stop_sharing(to_contacts)
+    return {"stopped": to_contacts}
 
 
 @tool()

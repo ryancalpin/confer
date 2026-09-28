@@ -123,7 +123,7 @@ There are three ways to manage it, all over the same node:
 | | Best for |
 |---|---|
 | **Phone app.** `confer serve` prints a private link; open it on your phone over Tailscale and use Share → Add to Home Screen. There are seven tabs: Inbox · Plans · Trips · Lists · Money · People · Settings. Treat the link like a password; Settings can rotate it. | Day to day: approve plans, money requests and introductions; organize trips; manage lists; see balances; share your ETA; edit each person's permissions and all settings. |
-| **Your AI assistant** (MCP, 37 tools) | Just ask: "plan dinner with Sam Friday", "add charcoal to the BBQ list", "what do I owe Priya?". Money, location and approvals always wait for your OK. |
+| **Your AI assistant** (MCP, 39 tools) | Just ask: "plan dinner with Sam Friday", "add charcoal to the BBQ list", "what do I owe Priya?". Money, location and approvals always wait for your OK. |
 | **CLI** (`confer ...`, `--json` for scripts) | Setup, automation and power use. |
 
 **Permissions are per person.** Each contact gets grants you choose:
@@ -176,7 +176,7 @@ More: `confer grant Sam +autoconfirm`, `confer note Sam "Thai or Italian?"`,
 
 ## Use it from any agent or harness
 
-One tool catalog (37 tools) is exposed four ways:
+One tool catalog (39 tools) is exposed four ways:
 - **MCP:** `confer mcp`, over stdio or `--http`.
 - **REST API:** `confer api enable`, then `POST /api/v1/tools/<name>`, with an OpenAPI spec.
 - **Function-calling schemas:** `confer tools export --format openai|anthropic|gemini`.
@@ -195,7 +195,7 @@ One tool catalog (37 tools) is exposed four ways:
 { "mcpServers": { "confer": { "command": "confer", "args": ["mcp"] } } }
 ```
 
-Your agent gets 37 tools. They cover plans (`confer_propose_plan`,
+Your agent gets 39 tools. They cover plans (`confer_propose_plan`,
 `confer_respond`), lists (`confer_create_list`, `confer_list_edit`), money
 (`confer_split_expense`, `confer_balances`), status (`confer_share_status`),
 notes, files, introductions, and the inbox. Your agent is the brain: it understands "dinner with my wife on

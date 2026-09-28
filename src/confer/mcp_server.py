@@ -66,7 +66,7 @@ def _annotations(t: Tool) -> Any:
 
 READ_ONLY = {"confer_whoami", "confer_events", "confer_settings", "confer_contacts", "confer_intros", "confer_inbox",
              "confer_plans", "confer_replies", "confer_lists", "confer_balances", "confer_ledger", "confer_presence",
-             "confer_trips", "confer_trip_budget", "confer_outgoing_files"}
+             "confer_trips", "confer_trip_budget", "confer_outgoing_files"}  # no side effects
 
 
 def build(node: Node) -> Any:

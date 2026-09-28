@@ -438,7 +438,8 @@ class Node(ListsMixin, MoneyMixin, PresenceMixin, TripsMixin):
         except ValueError as exc:
             raise NodeError(f"bad recurrence rule: {exc}") from exc
         if slots is None:
-            start = window_start or datetime.fromtimestamp(self.now(), tz=UTC) + timedelta(hours=1)
+            soonest = datetime.fromtimestamp(self.now(), tz=UTC) + timedelta(hours=1)
+            start = max(window_start or soonest, soonest)  # never propose times that have already passed
             end = window_end or start + timedelta(days=7)
             free = self.availability().candidates(start, end, timedelta(minutes=duration_minutes), between=between, rrule=rrule)
             slots = spread(free, max(1, candidates))
@@ -528,7 +529,8 @@ class Node(ListsMixin, MoneyMixin, PresenceMixin, TripsMixin):
             if slots is None:
                 first = Interval.from_wire(plan["slots"][0])
                 dur = timedelta(minutes=duration_minutes) if duration_minutes else first.end - first.start
-                start = window_start or datetime.fromtimestamp(self.now(), tz=UTC) + timedelta(hours=1)
+                soonest = datetime.fromtimestamp(self.now(), tz=UTC) + timedelta(hours=1)
+                start = max(window_start or soonest, soonest)
                 end = window_end or start + timedelta(days=7)
                 slots = spread(self.availability(exclude_plan=plan["id"]).candidates(start, end, dur, between=between, rrule=plan.get("rrule")), candidates)
                 if not slots:
