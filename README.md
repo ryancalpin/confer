@@ -8,6 +8,13 @@ privately, agree on a time, and each of you gets one message:
 *"✅ Dinner is set for Tue 18:00."* It works the same for a weekly game night
 with five friends or a book club with forty people.
 
+Beyond planning, your agents can:
+- keep **shared lists** ("who's bringing what");
+- **split the bill** and settle up;
+- share an **ETA or location** that expires on its own;
+- exchange **files and notes** end-to-end encrypted;
+- **introduce** people to each other.
+
 Confer is an open-source, self-hostable take on the idea behind Instinct's
 Instinct-to-Instinct Trusted Person network. It isn't affiliated with Instinct
 and doesn't interoperate with it. Confer uses **open standards**
@@ -73,6 +80,53 @@ Claude, Hermes, Codex, OpenClaw, or your own.
   key signs the handoff and the new key proves it is really held, so every
   contact follows automatically.
 
+### Beyond planning
+
+- **Shared lists.**
+  `confer list new "BBQ" --with Sam,Priya --item burgers --item buns`.
+  Everyone can add items, check them off, or claim one ("I'll bring it").
+  The owner's agent keeps the master copy and syncs everyone.
+- **Split the bill.** `confer money split "Dinner" 96.50 --with Sam,Priya`
+  asks each person's agent for their share. They accept or dispute, and
+  pay you back through your `pay_link` (Venmo, PayPal and so on).
+  `confer money balances` shows who owes whom. Confer keeps the agreed
+  record and never moves money.
+- **ETA and location.**
+  `confer share --plan <id> --text "leaving now" --eta 15` reaches everyone
+  in the plan, and the phone app adds a "share my location" button.
+  - **Opt-in:** each contact must allow it (the `location` grant).
+  - **Short-lived:** 2 h by default, 24 h at most.
+  - **No history:** receivers keep only the latest update.
+- **Files and notes.** `confer send-file Sam menu.pdf` (≤10 MB) and
+  `confer note Sam "Thai or Italian?" --ask`. Both are end-to-end
+  encrypted, and answers come back threaded.
+
+## How you manage it
+
+There are three ways to manage it, all over the same node:
+
+| | Best for |
+|---|---|
+| **Phone app.** `confer serve` prints a private link; add it to your home screen. | Day to day: approve plans, money requests and introductions; manage lists; see balances; share your ETA; edit each person's permissions and all settings. |
+| **Your AI assistant** (MCP, 28 tools) | Just ask: "plan dinner with Sam Friday", "add charcoal to the BBQ list", "what do I owe Priya?". Money, location and approvals always wait for your OK. |
+| **CLI** (`confer ...`, `--json` for scripts) | Setup, automation and power use. |
+
+**Permissions are per person.** Each contact gets grants you choose:
+`plans`, `autoconfirm`, `files`, `notes`, `intros`, `lists`, `money` and
+`location`. Everything except `autoconfirm` and `location` is on by default.
+Change them in the phone app or with `confer grant Sam +location -money`.
+
+**Settings** live in `~/.confer/config.json`. Edit them in the phone app's
+Settings tab or with `confer config <key> <value>`:
+- `name`, `endpoint`, `relay`, `tz`;
+- working hours (`hours_start`, `hours_end`) and `buffer_minutes`;
+- `calendar`: an .ics URL;
+- `tentative_holds`, `currency`, `pay_link`, `notify_webhook`,
+  `nudge_after_hours`.
+
+For safety, `notify_cmd` can only be set from the CLI, because it runs a
+program.
+
 ## Quick start
 
 ```bash
@@ -106,9 +160,10 @@ More: `confer grant Sam +autoconfirm`, `confer note Sam "Thai or Italian?"`,
 { "mcpServers": { "confer": { "command": "confer", "args": ["mcp"] } } }
 ```
 
-Your agent gets 19 tools: `confer_propose_plan`, `confer_inbox`,
-`confer_respond`, `confer_send_note`, `confer_replies`, `confer_introduce`,
-`confer_send_file`, `confer_invite`, and others. Your agent is the brain: it understands "dinner with my wife on
+Your agent gets 28 tools. They cover plans (`confer_propose_plan`,
+`confer_respond`), lists (`confer_create_list`, `confer_list_edit`), money
+(`confer_split_expense`, `confer_balances`), status (`confer_share_status`),
+notes, files, introductions, and the inbox. Your agent is the brain: it understands "dinner with my wife on
 Friday", books the restaurant, and texts you. Confer is the trusted pipe to
 other people's agents. See [examples/](examples/) for Claude Code and Hermes
 config.
@@ -151,7 +206,7 @@ Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md). Threat model:
 
 ## Status
 
-v0.2: the protocol and reference implementation are complete and tested (the
+v0.3: the protocol and reference implementation are complete and tested (the
 end-to-end tests run real nodes over HTTP, with relays, retries, forged
 messages, introductions and key rotation). CI runs on Python 3.11–3.13. Not
 yet done: multi-device, CalDAV write-back, push instead of relay polling, and
