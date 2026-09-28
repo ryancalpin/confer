@@ -35,9 +35,10 @@ def _server_class() -> Any:
 
 INSTRUCTIONS = (
     "Confer connects this person's agent to their trusted contacts' agents. Use it to plan things "
-    "with other people (their agents check calendars privately and answer), send notes/files, and "
-    "check the inbox for decisions. Never accept, counter or cancel a plan without the human's OK "
-    "unless they told you to; relay inbox items to them plainly."
+    "with other people (their agents check calendars privately and answer), keep shared lists, split "
+    "expenses, share ETAs, send notes/files, and check the inbox for decisions. Never accept, counter or cancel a plan without the human's OK "
+    "unless they told you to; never accept money requests or share location without explicit OK; "
+    "relay inbox items to them plainly."
 )
 
 
@@ -188,6 +189,72 @@ def build(node: Node) -> Any:
 
         node.send_file(to, Path(path), note)
         return {"sent": True}
+
+    # ---------------------------------------------------------------- lists
+    @mcp.tool()
+    def confer_create_list(title: str, with_contacts: list[str], items: list[str] | None = None) -> dict:
+        """Create a shared list (groceries, packing, who's bringing what) with contacts."""
+        lst = node.create_list(title, with_contacts, items=items or [])
+        return {"list_id": lst["id"], "items": len(lst["items"])}
+
+    @mcp.tool()
+    def confer_lists() -> list[dict]:
+        """All shared lists with their items (numbered from 1), who claimed what, and done state."""
+        return [{"list_id": x["id"], "title": x["title"], "owner": x.get("owner_name"), "mine": x.get("role") == "owner",
+                 "members": list(x["members"].values()),
+                 "items": [{"n": n, "text": i["text"], "done": i["done"], "claimed_by": i["claimed_name"]} for n, i in enumerate(x["items"], 1)]}
+                for x in node.lists()]
+
+    @mcp.tool()
+    def confer_list_edit(list_id: str, action: str, item: str = "", text: str = "") -> dict:
+        """Edit a shared list. action: add (uses text) | check | uncheck | claim | unclaim | remove (use item =
+        item number or exact text) | leave | delete. Members' edits go via the owner's agent."""
+        if action in ("leave", "delete"):
+            node.delete_list(list_id)
+            return {"ok": True}
+        lst = node.list_op(list_id, action, item=item or None, text=text)
+        return {"ok": True, "list_id": lst["id"]}
+
+    # ---------------------------------------------------------------- money
+    @mcp.tool()
+    def confer_split_expense(title: str, amount: str, with_contacts: list[str], currency: str = "", include_me: bool = True,
+                             shares: dict[str, str] | None = None, note: str = "", plan_id: str = "") -> dict:
+        """The human paid `amount` for `title`; ask each contact for their share (equal split, or explicit
+        `shares` by name). Each person's agent asks them to accept. Confer records money; it doesn't move it."""
+        entries = node.add_expense(title, amount, with_contacts, currency=currency or None, shares=shares,
+                                   include_me=include_me, note=note, plan_id=plan_id)
+        from .money import fmt
+
+        return {"requests": [{"entry_id": e["id"], "amount": fmt(e["cents"], e["currency"])} for e in entries]}
+
+    @mcp.tool()
+    def confer_balances() -> list[dict]:
+        """Who owes whom, per contact and currency (positive balance_cents = they owe the human)."""
+        return node.balances()
+
+    @mcp.tool()
+    def confer_record_payment(to: str, amount: str, currency: str = "", note: str = "") -> dict:
+        """Record that the human paid a contact back; the contact confirms it."""
+        return {"entry_id": node.record_payment(to, amount, currency=currency or None, note=note)["id"]}
+
+    @mcp.tool()
+    def confer_answer_money(entry_id: str, accept: bool, note: str = "") -> dict:
+        """Accept or dispute an expense share / payment someone recorded. Only with the human's explicit OK."""
+        return {"status": node.answer_entry(entry_id, accept, note)["status"]}
+
+    # ------------------------------------------------------------- presence
+    @mcp.tool()
+    def confer_share_status(to_contacts: list[str] | None = None, plan_id: str = "", text: str = "", eta_minutes: int | None = None,
+                            lat: float | None = None, lon: float | None = None, ttl_minutes: int = 120) -> dict:
+        """Share a status ('running late'), ETA and/or location with contacts or everyone in a plan. It expires
+        (default 2h). Location is sensitive: only share coordinates when the human asked to."""
+        return {"sent_to": node.share_status(to_contacts, plan_id=plan_id, text=text, eta_minutes=eta_minutes,
+                                             lat=lat, lon=lon, ttl_minutes=ttl_minutes)}
+
+    @mcp.tool()
+    def confer_presence() -> list[dict]:
+        """Current statuses / ETAs / locations contacts are sharing with the human."""
+        return [{"contact": p["contact"], "summary": p["summary"], "eta_minutes": p.get("eta_minutes")} for p in node.presence()]
 
     @mcp.tool()
     def confer_sync() -> dict:

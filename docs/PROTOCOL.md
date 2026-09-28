@@ -89,6 +89,9 @@ Grants say what *that contact* may do with *my* node:
 | `files` | send `file.send` |
 | `notes` | send `note` |
 | `intros` | send `intro.offer` (each introduction still needs my owner's approval) |
+| `lists` | share lists with me (`list.share`) |
+| `money` | send expense shares and payments for me to confirm (`money.expense`, `money.settle`) |
+| `location` | send me status / ETA / location (`presence.update`); off by default |
 
 Envelopes from non-contacts are refused, except `pair.request`. A pending
 contact (you accepted their invite but they haven't confirmed yet) may only
@@ -254,6 +257,63 @@ Fingerprints appear in both inboxes so they can be checked.
 Senders MUST deliver each recipient's messages in order, never letting a
 retry of an earlier message be overtaken by a later one. That guarantees
 `key.rotate` arrives before anything signed with the new key.
+
+## 7c. Shared lists
+
+The owner's node holds the list; like plans, the flow is hub-and-spoke.
+
+| type | from → to | body |
+|---|---|---|
+| `list.share` | owner → each member | `{list: {id, rev, title, owner, owner_name, members:{id:name}, items:[{id, text, done, claimed_by, claimed_name, added_by_name}]}}`. A higher `rev` replaces the stored copy; any other `rev` is ignored. |
+| `list.op` | member → owner | `{list_id, op: add\|check\|uncheck\|remove\|claim\|unclaim\|leave, item_id, text}` |
+| `list.close` | owner → members | `{list_id}` (the list was deleted, or you left it) |
+
+- **Who may share and edit.** Members MUST hold the `lists` grant for the
+  owner, and the owner accepts `list.op` only from listed members.
+- **Idempotent edits.** `add` carries a sender-chosen `item_id`, so a retried
+  add is harmless. Ops on an item that no longer exists are ignored.
+- **Claims.** `claim` fails if someone else already holds the item. Only the
+  claimer or the owner can `unclaim`.
+- **Limits:** 300 items, 50 members, 200 characters per item.
+
+## 7d. Expenses
+
+Confer records who owes whom. It never moves money. Amounts are integer
+minor units (cents) with an ISO 4217 currency code.
+
+| type | from → to | body |
+|---|---|---|
+| `money.expense` | payer → each person sharing the cost | `{entry_id, title, currency, total_cents, share_cents, people, note, plan_id, pay_link}` |
+| `money.settle` | the person paying back → the person owed | `{entry_id, currency, cents, note}` ("I paid you") |
+| `money.ack` | receiver → creator | `{entry_id, status: accepted\|disputed, note}` |
+| `money.cancel` | creator → receiver | `{entry_id}` |
+
+- **Permission.** Receiving `money.expense` or `money.settle` requires the
+  `money` grant. Each creates a pending entry that the owner accepts or
+  disputes.
+- **Balances.** Both sides compute balances from *accepted* entries only, so
+  they always agree.
+  - An expense paid by X means the other side owes X its share.
+  - A settlement from X reduces what X owes.
+- **Equal splits.** Each share is `total // n`, and the first
+  `total mod n` shares get one extra cent. When the payer is included, the
+  payer takes one share.
+- **`pay_link`.** Optional. It is an https URL the debtor can use to pay
+  (Venmo, PayPal and the like).
+
+## 7e. Status, ETA and location
+
+| type | body |
+|---|---|
+| `presence.update` | `{text (≤280), eta_minutes (0–1440) \| null, lat, lon (5 dp) \| null, accuracy_m \| null, expires_at, plan_id, plan_title}` |
+| `presence.clear` | `{}`: stop showing my status |
+
+- **Permission.** Receiving requires the `location` grant, which is off by
+  default.
+- **Latest only.** Receivers MUST keep only the latest update per contact,
+  and MUST drop it at `expires_at`, capped at 24 h. No history is kept.
+- **Where coordinates come from.** The node has no location of its own.
+  Coordinates come from the owner's device, when the owner explicitly shares.
 
 ## 8. Versioning
 

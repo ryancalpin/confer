@@ -67,3 +67,30 @@ def test_cli_introductions_and_rotation(net, capsys):
     ben.send_note("ann", "still there?")
     wait_for(lambda: [i for i in ann.inbox() if i["kind"] == "note"], what="note to the rotated key")
     assert ann.identity.agent_id == new_id
+
+
+def test_cli_lists_money_and_share(net, capsys):
+    alex, sam = net.node("alex"), net.node("sam")
+    net.pair(alex, sam, b_grants="plans,lists,money,location")
+    ah, sh = str(alex.home), str(sam.home)
+    code, out, _ = run(capsys, "--home", ah, "list", "new", "Camping", "--with", "sam", "--item", "tent", "--item", "stove")
+    assert code == 0 and "1. [ ] tent" in out
+    lid = alex.lists()[0]["id"]
+    wait_for(lambda: sam.store.get_list(lid), what="list at sam")
+    assert run(capsys, "--home", sh, "list", "claim", lid, "2")[0] == 0
+    wait_for(lambda: alex.get_list(lid)["items"][1]["claimed_name"] == "sam", what="claimed")
+    code, out, _ = run(capsys, "--home", ah, "list", "show", lid)
+    assert "stove  ← sam" in out
+    code, out, _ = run(capsys, "--home", ah, "money", "split", "Campsite", "60", "--with", "sam")
+    assert code == 0 and "30.00 USD" in out
+    wait_for(lambda: sam.ledger(), what="request at sam")
+    assert run(capsys, "--home", sh, "money", "accept", sam.ledger()[0]["id"])[0] == 0
+    wait_for(lambda: alex.balances() and alex.balances()[0]["balance_cents"] == 3000, what="balance")
+    code, out, _ = run(capsys, "--home", ah, "money", "balances")
+    assert "sam" in out and "owes you 30.00 USD" in out
+    assert run(capsys, "--home", ah, "share", "--to", "sam", "--text", "on my way", "--eta", "20")[0] == 0
+    wait_for(lambda: sam.presence(), what="status")
+    code, out, _ = run(capsys, "--home", sh, "presence")
+    assert "on my way" in out and "ETA 20 min" in out
+    assert run(capsys, "--home", ah, "config", "pay_link", "https://venmo.com/u/alex")[0] == 0
+    assert run(capsys, "--home", ah, "config", "currency", "euro")[0] == 1

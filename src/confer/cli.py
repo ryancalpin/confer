@@ -14,7 +14,8 @@ from . import plans as P
 from .availability import Interval
 from .node import GRANTS, Node, NodeError, check_url
 
-CONFIG_KEYS = {"name", "endpoint", "relay", "tz", "hours_start", "hours_end", "buffer_minutes", "calendar", "notify_webhook", "notify_cmd"}
+CONFIG_KEYS = {"name", "endpoint", "relay", "tz", "hours_start", "hours_end", "buffer_minutes", "calendar", "notify_webhook", "notify_cmd",
+               "currency", "pay_link", "tentative_holds", "nudge_after_hours"}
 
 
 def home_dir(args: argparse.Namespace) -> Path:
@@ -79,8 +80,16 @@ def cmd_config(a: argparse.Namespace, node: Node) -> None:
         print(node.config.get(a.key, ""))
         return
     value: object = a.value
-    if a.key in ("endpoint", "relay", "notify_webhook") and a.value:
+    if a.key in ("endpoint", "relay", "notify_webhook", "pay_link") and a.value:
         value = check_url(a.value)
+    if a.key == "tentative_holds":
+        value = a.value.lower() in ("1", "true", "yes", "on")
+    if a.key == "nudge_after_hours":
+        value = float(a.value)
+    if a.key == "currency":
+        value = a.value.upper()
+        if len(value) != 3 or not value.isalpha():
+            raise NodeError("currency must be a 3-letter code like USD")
     if a.key == "buffer_minutes":
         value = int(a.value)
     if a.key == "tz":
@@ -241,6 +250,132 @@ def cmd_remind(a: argparse.Namespace, node: Node) -> None:
     print(f"Sent {node.send_reminders()} reminder(s).")
 
 
+def _names(spec: str | None) -> list[str]:
+    return [n.strip() for n in (spec or "").split(",") if n.strip()]
+
+
+def _show_list(lst: dict) -> str:
+    mine = "yours" if lst.get("role") == "owner" else f"from {lst.get('owner_name', '?')}"
+    lines = [f"{lst['title']}  ({mine}, with {', '.join(lst['members'].values()) or 'nobody'})  id={lst['id']}"]
+    for n, i in enumerate(lst["items"], 1):
+        who = f"  ← {i['claimed_name']}" if i["claimed_name"] else ""
+        lines.append(f"  {n:>2}. [{'x' if i['done'] else ' '}] {i['text']}{who}")
+    return "\n".join(lines)
+
+
+def cmd_list_new(a: argparse.Namespace, node: Node) -> None:
+    lst = node.create_list(a.title, _names(a.with_), items=a.item or [])
+    _print(lst if a.json else "Shared:\n" + _show_list(lst), a.json)
+
+
+def cmd_list_ls(a: argparse.Namespace, node: Node) -> None:
+    lists = node.lists()
+    if a.json:
+        return _print(lists, True)
+    if not lists:
+        print("No lists.")
+    for lst in lists:
+        done = sum(i["done"] for i in lst["items"])
+        print(f"{lst['id']}  {lst['title']}  {done}/{len(lst['items'])} done  ({'owner' if lst.get('role') == 'owner' else lst.get('owner_name')})")
+
+
+def cmd_list_show(a: argparse.Namespace, node: Node) -> None:
+    lst = node.get_list(a.id)
+    _print(lst if a.json else _show_list(lst), a.json)
+
+
+def cmd_list_edit(a: argparse.Namespace, node: Node) -> None:
+    op = a.list_cmd
+    if op == "add":
+        node.list_op(a.id, "add", text=" ".join(a.text))
+    elif op in ("leave", "delete"):
+        node.delete_list(a.id)
+        return print("Done.")
+    else:
+        node.list_op(a.id, op, item=a.item)
+    print(_show_list(node.get_list(a.id)) + ("" if node.get_list(a.id).get("role") == "owner" else "\n(sent to the owner; refreshes when they confirm)"))
+
+
+def cmd_money_split(a: argparse.Namespace, node: Node) -> None:
+    shares = dict(kv.split("=", 1) for kv in _names(a.shares)) if a.shares else None
+    entries = node.add_expense(a.title, a.amount, _names(a.with_), currency=a.currency, shares=shares,
+                               include_me=not a.exclude_me, note=a.note or "", plan_id=a.plan or "")
+    from .money import fmt
+
+    for e in entries:
+        c = node.store.contact(e["contact"])
+        print(f"Asked {c.name if c else '?'} for {fmt(e['cents'], e['currency'])} ({e['id']})")
+
+
+def cmd_money_balances(a: argparse.Namespace, node: Node) -> None:
+    rows = node.balances()
+    if a.json:
+        return _print(rows, True)
+    if not rows:
+        print("All square — no shared expenses yet.")
+    from .money import fmt
+
+    for r in rows:
+        b = r["balance_cents"]
+        line = f"{r['contact']:16} " + ("owes you " + fmt(b, r["currency"]) if b > 0 else "you owe " + fmt(-b, r["currency"]) if b < 0 else "square")
+        if r["pending_cents"]:
+            line += f"   (pending {fmt(r['pending_cents'], r['currency'])})"
+        if r["disputed_cents"]:
+            line += f"   (disputed {fmt(r['disputed_cents'], r['currency'])})"
+        print(line)
+
+
+def cmd_money_ledger(a: argparse.Namespace, node: Node) -> None:
+    rows = node.ledger(a.with_)
+    if a.json:
+        return _print(rows, True)
+    from .money import fmt
+
+    for e in rows:
+        c = node.store.contact(e["contact"])
+        who = c.name if c else "?"
+        arrow = f"{who} owes you" if (e["payer"] == "me") == (e["kind"] == "expense") else f"you owe {who}"
+        if e["kind"] == "settle":
+            arrow = f"you paid {who}" if e["payer"] == "me" else f"{who} paid you"
+        print(f"{e['id']}  {e['status']:9} {e['title'][:30]:30} {fmt(e['cents'], e['currency']):>14}  {arrow}")
+
+
+def cmd_money_pay(a: argparse.Namespace, node: Node) -> None:
+    e = node.record_payment(a.to, a.amount, currency=a.currency, note=a.note or "")
+    print(f"Recorded; {a.to} will be asked to confirm ({e['id']}).")
+
+
+def cmd_money_answer(a: argparse.Namespace, node: Node) -> None:
+    e = node.answer_entry(a.id, a.money_cmd == "accept", a.note or "")
+    print(f"{e['title']}: {e['status']}.")
+
+
+def cmd_money_cancel(a: argparse.Namespace, node: Node) -> None:
+    node.cancel_entry(a.id)
+    print("Cancelled.")
+
+
+def cmd_share(a: argparse.Namespace, node: Node) -> None:
+    names = node.share_status(_names(a.to) or None, plan_id=a.plan or "", text=a.text or "", eta_minutes=a.eta,
+                              lat=a.lat, lon=a.lon, ttl_minutes=a.ttl)
+    print(f"Shared with {', '.join(names)} for {a.ttl} min.")
+
+
+def cmd_unshare(a: argparse.Namespace, node: Node) -> None:
+    node.stop_sharing(_names(a.to))
+    print("Stopped.")
+
+
+def cmd_presence(a: argparse.Namespace, node: Node) -> None:
+    rows = node.presence()
+    if a.json:
+        return _print(rows, True)
+    if not rows:
+        print("Nobody is sharing a status with you right now.")
+    for r in rows:
+        print(r["summary"])
+
+
 def cmd_tick(a: argparse.Namespace, node: Node) -> None:
     node.tick()
     pending = node.store.outbox()
@@ -390,6 +525,74 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--yes", action="store_true")
     s.set_defaults(fn=cmd_rotate_key)
     sub.add_parser("remind", help="nudge people who haven't answered your plans").set_defaults(fn=cmd_remind)
+    lst = sub.add_parser("list", help="shared lists (groceries, packing, who's bringing what)").add_subparsers(dest="list_cmd", required=True)
+    s = lst.add_parser("new")
+    s.add_argument("title")
+    s.add_argument("--with", dest="with_", required=True, help="comma-separated contact names")
+    s.add_argument("--item", action="append", help="initial item (repeatable)")
+    s.set_defaults(fn=cmd_list_new)
+    lst.add_parser("ls").set_defaults(fn=cmd_list_ls)
+    s = lst.add_parser("show")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_list_show)
+    s = lst.add_parser("add")
+    s.add_argument("id")
+    s.add_argument("text", nargs="+")
+    s.set_defaults(fn=cmd_list_edit)
+    for op, help_ in (("check", "mark done"), ("uncheck", "mark not done"), ("claim", "\"I'll bring it\""), ("unclaim", "give it back"), ("remove", "delete an item")):
+        s = lst.add_parser(op, help=help_)
+        s.add_argument("id")
+        s.add_argument("item", help="item number (as shown), id or exact text")
+        s.set_defaults(fn=cmd_list_edit)
+    for op in ("leave", "delete"):
+        s = lst.add_parser(op)
+        s.add_argument("id")
+        s.set_defaults(fn=cmd_list_edit)
+
+    money = sub.add_parser("money", help="split expenses and settle up").add_subparsers(dest="money_cmd", required=True)
+    s = money.add_parser("split", help="you paid; ask others for their share")
+    s.add_argument("title")
+    s.add_argument("amount")
+    s.add_argument("--with", dest="with_", required=True)
+    s.add_argument("--currency")
+    s.add_argument("--shares", help="explicit shares, e.g. Sam=40,Priya=20")
+    s.add_argument("--exclude-me", action="store_true", help="split only among the others")
+    s.add_argument("--note")
+    s.add_argument("--plan", help="link to a plan id")
+    s.set_defaults(fn=cmd_money_split)
+    money.add_parser("balances").set_defaults(fn=cmd_money_balances)
+    s = money.add_parser("ledger")
+    s.add_argument("--with", dest="with_")
+    s.set_defaults(fn=cmd_money_ledger)
+    s = money.add_parser("pay", help="record that you paid someone back")
+    s.add_argument("to")
+    s.add_argument("amount")
+    s.add_argument("--currency")
+    s.add_argument("--note")
+    s.set_defaults(fn=cmd_money_pay)
+    for op in ("accept", "dispute"):
+        s = money.add_parser(op)
+        s.add_argument("id")
+        s.add_argument("--note")
+        s.set_defaults(fn=cmd_money_answer)
+    s = money.add_parser("cancel")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_money_cancel)
+
+    s = sub.add_parser("share", help="share a status, ETA or location (expires)")
+    s.add_argument("--to", help="comma-separated contacts")
+    s.add_argument("--plan", help="everyone in this plan")
+    s.add_argument("--text")
+    s.add_argument("--eta", type=int, help="minutes")
+    s.add_argument("--lat", type=float)
+    s.add_argument("--lon", type=float)
+    s.add_argument("--ttl", type=int, default=120, help="minutes until it disappears")
+    s.set_defaults(fn=cmd_share)
+    s = sub.add_parser("unshare", help="stop sharing status/location")
+    s.add_argument("--to", required=True)
+    s.set_defaults(fn=cmd_unshare)
+    sub.add_parser("presence", help="who's sharing a status/ETA/location with you").set_defaults(fn=cmd_presence)
+
     sub.add_parser("tick", help="deliver queued messages, poll relay, check deadlines").set_defaults(fn=cmd_tick)
 
     s = sub.add_parser("serve", help="run this node's server")

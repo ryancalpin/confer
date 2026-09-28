@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+- **Shared lists** (`confer list ...`, `list.share` / `list.op` / `list.close`, grant `lists`): groceries, packing, "who's bringing what", with claims.
+- **Expense splitting** (`confer money ...`, `money.expense` / `money.settle` / `money.ack` / `money.cancel`, grant `money`): equal or custom splits, accept/dispute, settle-up, per-person balances, optional `pay_link`. Records only; no money moves.
+- **Status / ETA / location** (`confer share`, `presence.update` / `presence.clear`, grant `location`, off by default): expiring and latest-only, sent to contacts or to everyone in a plan.
+- MCP: 28 tools. New config: `currency`, `pay_link`.
+
 ## 0.2.0
 - **Vouched introductions** (`confer introduce A B`, `intro.offer` / `pair.intro`, new `intros` grant).
 - **Key rotation** (`confer rotate-key --yes`, `key.rotate` with a proof from the new key, 30-day grace for the old key; a running server picks up a key rotated by another process).

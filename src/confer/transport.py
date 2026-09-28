@@ -20,7 +20,7 @@ from .identity import Identity, b64e
 A2A_PATH = "/a2a"
 A2A_VERSION = "1.0"
 REJECTED = -32001  # JSON-RPC error code: envelope permanently refused by the receiver
-USER_AGENT = "confer/0.2"
+USER_AGENT = "confer/0.3"
 
 
 class DeliveryError(RuntimeError):

@@ -8,7 +8,9 @@
 | Message authenticity | An Ed25519 signature on every envelope. The agent id is the public key, so there's no directory to compromise. |
 | Your calendar | Never transmitted. Peers learn only which of *their proposed* slots you accepted, and only once you (or your `autoconfirm` grant) answer. |
 | Who may reach your agent | Only paired contacts. Everything else is refused before any handler runs. |
-| What a contact may do | Per-contact grants (`plans`, `autoconfirm`, `files`, `notes`) checked on every message. Only a plan's organizer can propose, confirm or cancel it. |
+| What a contact may do | Per-contact grants (`plans`, `autoconfirm`, `files`, `notes`, `intros`, `lists`, `money`, `location`) checked on every message. Only a plan's or list's owner can change it. |
+| Location | Opt-in per contact (`location` grant, off by default). It is shared only when you choose to, it expires (24 h at most), and receivers keep only the latest update, never a history. |
+| Money | Confer never moves money or holds payment credentials. Expense shares count only after the other person accepts them. |
 | Replays | Each envelope id is remembered for 8 days, and envelopes older than 7 days are refused. |
 | Introductions | Only contacts you gave the `intros` grant can introduce people, and every introduction needs your approval. The peer's key is vouched for by the introducer, and its fingerprint is shown to you. |
 | Phone inbox | Served only at a secret-token URL (`ui_token`, 192 bits). A hidden form token is required too. Strict CSP, no framing, no caching, and all text is HTML-escaped. |
