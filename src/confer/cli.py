@@ -378,6 +378,112 @@ def cmd_presence(a: argparse.Namespace, node: Node) -> None:
         print(r["summary"])
 
 
+def _when_arg(text: str | None, tz: str) -> str:
+    return _local_dt(text, tz).strftime("%Y-%m-%dT%H:%M:%SZ") if text else ""
+
+
+def _nth(trip: dict, section: str, n: str) -> str:
+    items = trip[section]
+    if n.isdigit() and 1 <= int(n) <= len(items):
+        return items[int(n) - 1]["id"]
+    if any(i["id"] == n for i in items):
+        return n
+    raise NodeError(f"no {section[:-1]} #{n}")
+
+
+def _show_trip(node: Node, t: dict) -> str:
+    tz = node.tz
+    fmt = lambda iso: _local_dt(iso.replace("Z", "+00:00"), tz).astimezone(ZoneInfo(tz)).strftime("%a %b %d %H:%M") if iso else ""  # noqa: E731
+    who = ", ".join([t["owner_name"] + " (organizer)", *t["members"].values()])
+    lines = [f"🧳 {t['title']}{' — ' + t['destination'] if t['destination'] else ''}  [{t['status']}]  {t['start_date']} → {t['end_date']}  id={t['id']}",
+             f"   with {who}"]
+    if t["notes"]:
+        lines.append(f"   {t['notes']}")
+    if t["itinerary"]:
+        lines.append("  Itinerary")
+        for i in t["itinerary"]:
+            conf = f"  #{i['confirmation']}" if i["confirmation"] else ""
+            lines.append(f"   • {fmt(i['start']) or '(no time)':16} {i['kind']:9} {i['title']}{' @ ' + i['location'] if i['location'] else ''}{conf}")
+    if t["travelers"]:
+        lines.append("  Arrivals / departures")
+        for tr in t["travelers"].values():
+            ar, de = tr["arrive"], tr["depart"]
+            pickup = " — needs pickup" if ar["needs_pickup"] else ""
+            lines.append(f"   • {tr['name']}: in {fmt(ar['when']) or '?'} {ar['how']} {ar['where']}{pickup}; out {fmt(de['when']) or '?'} {de['how']}")
+    for n, r in enumerate(t["rides"], 1):
+        riders = ", ".join(r["passengers"].values()) or "empty"
+        lines.append(f"  🚗 ride {n}: {r['driver_name']} from {r['from'] or '?'} {fmt(r['leaves_at'])} — {len(r['passengers'])}/{r['seats']} ({riders})")
+    for n, r in enumerate(t["rooms"], 1):
+        lines.append(f"  🛏️ room {n}: {r['name']} — {len(r['occupants'])}/{r['beds']} ({', '.join(r['occupants'].values()) or 'empty'})")
+    for n, k in enumerate(t["tasks"], 1):
+        lines.append(f"  {'☑' if k['done'] else '☐'} task {n}: {k['text']}{' — ' + k['assignee_name'] if k['assignee_name'] else ''}{' (due ' + k['due'] + ')' if k['due'] else ''}")
+    for n, p in enumerate(t["polls"], 1):
+        tally = {o["id"]: 0 for o in p["options"]}
+        for v in p["votes"].values():
+            tally[v] = tally.get(v, 0) + 1
+        opts = "  ".join(f"{i + 1}) {o['text']} ×{tally[o['id']]}" for i, o in enumerate(p["options"]))
+        lines.append(f"  🗳️ poll {n}{' (closed)' if p['closed'] else ''}: {p['question']}  {opts}")
+    if t["links"].get("list_id"):
+        lines.append(f"  📝 packing list: confer list show {t['links']['list_id']}")
+    return "\n".join(lines)
+
+
+def cmd_trip(a: argparse.Namespace, node: Node) -> None:
+    c, tz = a.trip_cmd, node.tz
+    if c == "new":
+        t = node.create_trip(a.title, _names(a.with_), start_date=a.start, end_date=a.end, destination=a.dest or "",
+                             notes=a.notes or "", packing_list=not a.no_packing)
+        return _print(t if a.json else "Created:\n" + _show_trip(node, t), a.json)
+    if c == "ls":
+        trips = node.trips()
+        if a.json:
+            return _print(trips, True)
+        if not trips:
+            print("No trips.")
+        for t in trips:
+            print(f"{t['id']}  {t['start_date']} → {t['end_date']}  {t['status']:9} {t['title']}{' — ' + t['destination'] if t['destination'] else ''}")
+        return None
+    t = node.get_trip(a.id)
+    if c == "show":
+        return _print(t if a.json else _show_trip(node, t), a.json)
+    if c == "budget":
+        from .money import fmt
+
+        b = node.trip_budget(a.id)
+        for ccy, v in b.items():
+            print(f"{ccy}: others owe you {fmt(v['you_paid_shares'], ccy)} for this trip; you owe {fmt(v['you_owe'], ccy)}")
+        return print("No expenses tagged with this trip yet (use confer money split ... --plan <trip id>).") if not b else None
+    op, args = {
+        "add": ("itinerary.add", lambda: {"kind": a.kind, "title": a.title, "start": _when_arg(a.start, tz), "end": _when_arg(a.end, tz),
+                                           "location": a.where or "", "confirmation": a.conf or "", "details": a.details or "", "url": a.url or ""}),
+        "remove": ("itinerary.remove", lambda: {"id": _nth(t, "itinerary", a.n)}),
+        "arrive": ("traveler.set", None), "depart": ("traveler.set", None),
+        "ride": ("ride.offer", lambda: {"seats": a.seats, "from": a.origin or "", "leaves_at": _when_arg(a.leaves, tz)}),
+        "join-ride": ("ride.join", lambda: {"id": _nth(t, "rides", a.n)}),
+        "room": ("room.add", lambda: {"name": a.name, "beds": a.beds}),
+        "join-room": ("room.join", lambda: {"id": _nth(t, "rooms", a.n)}),
+        "task": ("task.add", lambda: {"text": a.text, "assignee": a.for_ or "", "due": a.due or ""}),
+        "done": ("task.done", lambda: {"id": _nth(t, "tasks", a.n)}),
+        "poll": ("poll.add", lambda: {"question": a.question, "options": a.options}),
+        "vote": ("poll.vote", lambda: {"id": _nth(t, "polls", a.n), "option": f"o{int(a.option) - 1}"}),
+        "update": ("trip.update", lambda: {k: v for k, v in (("title", a.title), ("destination", a.dest), ("start_date", a.start),
+                                                               ("end_date", a.end), ("status", a.status), ("notes", a.notes)) if v}),
+        "leave": ("leave", lambda: {}),
+        "op": (a.op if c == "op" else "", lambda: json.loads(a.args or "{}")),
+    }[c]
+    if c in ("arrive", "depart"):
+        mine = t["travelers"].get(node.identity.agent_id) or {"arrive": {}, "depart": {}, "notes": ""}
+        mine = {k: mine.get(k) for k in ("arrive", "depart", "notes")}
+        mine[c] = {"when": _when_arg(a.when, tz), "how": a.how or "", "where": a.where or "", "needs_pickup": bool(getattr(a, "pickup", False))}
+        node.trip_op(a.id, "traveler.set", **mine)
+    elif c == "leave":
+        node.cancel_trip(a.id)
+    else:
+        node.trip_op(a.id, op, **args())
+    fresh = node.get_trip(a.id) if node.store.get_trip(t["id"]) and not node.store.get_trip(t["id"]).get("leaving") else None
+    print(_show_trip(node, fresh) if fresh and t.get("role") == "owner" else "Sent to the organizer; you'll see it once they confirm.")
+
+
 def cmd_tick(a: argparse.Namespace, node: Node) -> None:
     node.tick()
     pending = node.store.outbox()
@@ -580,6 +686,85 @@ def build_parser() -> argparse.ArgumentParser:
     s = money.add_parser("cancel")
     s.add_argument("id")
     s.set_defaults(fn=cmd_money_cancel)
+
+    trip = sub.add_parser("trip", help="trip planning: itinerary, logistics, rides, rooms, tasks, polls").add_subparsers(dest="trip_cmd", required=True)
+    s = trip.add_parser("new")
+    s.add_argument("title")
+    s.add_argument("--with", dest="with_", required=True)
+    s.add_argument("--start", required=True, help="YYYY-MM-DD")
+    s.add_argument("--end", required=True, help="YYYY-MM-DD")
+    s.add_argument("--dest", help="destination")
+    s.add_argument("--notes")
+    s.add_argument("--no-packing", action="store_true", help="don't create a shared packing list")
+    trip.add_parser("ls")
+    for name in ("show", "budget", "leave"):
+        trip.add_parser(name).add_argument("id")
+    s = trip.add_parser("add", help="add an itinerary item")
+    s.add_argument("id")
+    s.add_argument("title")
+    s.add_argument("--kind", default="other", choices=["flight", "lodging", "activity", "transport", "meal", "other"])
+    s.add_argument("--start", help="local date/time, e.g. 2031-03-20T15:00")
+    s.add_argument("--end")
+    s.add_argument("--where")
+    s.add_argument("--conf", help="confirmation code")
+    s.add_argument("--details")
+    s.add_argument("--url", help="https link (booking page, map)")
+    s = trip.add_parser("remove", help="remove itinerary item #n")
+    s.add_argument("id")
+    s.add_argument("n")
+    for leg in ("arrive", "depart"):
+        s = trip.add_parser(leg, help=f"your {leg} details")
+        s.add_argument("id")
+        s.add_argument("--when")
+        s.add_argument("--how", help="e.g. UA 1234, driving, train")
+        s.add_argument("--where", help="airport/station/address")
+        if leg == "arrive":
+            s.add_argument("--pickup", action="store_true", help="you need a ride from there")
+    s = trip.add_parser("ride", help="offer seats in your car")
+    s.add_argument("id")
+    s.add_argument("--seats", type=int, required=True)
+    s.add_argument("--from", dest="origin")
+    s.add_argument("--leaves")
+    s = trip.add_parser("join-ride")
+    s.add_argument("id")
+    s.add_argument("n")
+    s = trip.add_parser("room", help="add a room (organizer)")
+    s.add_argument("id")
+    s.add_argument("name")
+    s.add_argument("--beds", type=int, default=2)
+    s = trip.add_parser("join-room")
+    s.add_argument("id")
+    s.add_argument("n")
+    s = trip.add_parser("task")
+    s.add_argument("id")
+    s.add_argument("text")
+    s.add_argument("--for", dest="for_", help="contact name or 'me'")
+    s.add_argument("--due", help="YYYY-MM-DD")
+    s = trip.add_parser("done", help="mark task #n done")
+    s.add_argument("id")
+    s.add_argument("n")
+    s = trip.add_parser("poll")
+    s.add_argument("id")
+    s.add_argument("question")
+    s.add_argument("options", nargs="+")
+    s = trip.add_parser("vote")
+    s.add_argument("id")
+    s.add_argument("n", help="poll number")
+    s.add_argument("option", help="option number")
+    s = trip.add_parser("update", help="organizer: change details/status")
+    s.add_argument("id")
+    s.add_argument("--title")
+    s.add_argument("--dest")
+    s.add_argument("--start")
+    s.add_argument("--end")
+    s.add_argument("--notes")
+    s.add_argument("--status", choices=["planning", "booked", "cancelled"])
+    s = trip.add_parser("op", help="any trip operation with JSON args (advanced)")
+    s.add_argument("id")
+    s.add_argument("op")
+    s.add_argument("args", nargs="?", help='JSON, e.g. \'{"id": "...", "option": "o1"}\'')
+    for p_ in trip.choices.values():
+        p_.set_defaults(fn=cmd_trip)
 
     s = sub.add_parser("share", help="share a status, ETA or location (expires)")
     s.add_argument("--to", help="comma-separated contacts")

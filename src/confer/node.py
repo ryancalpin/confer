@@ -15,6 +15,7 @@ Grants are what a contact may do *with my node*:
   lists        may share lists with me
   money        may send me expense shares / payments to confirm
   location     may send me their status, ETA and location (off by default)
+  trips        may add me to trips they organize
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import asdict
-from datetime import datetime, time as dtime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -48,6 +49,7 @@ from .availability import (
     StaticProvider,
     expand,
     normalize_rrule,
+    parse_dt,
     spread,
 )
 from .envelope import SEEN_TTL_SECONDS, EnvelopeError, MAX_AGE_SECONDS, canonical, open_, seal
@@ -55,13 +57,14 @@ from .identity import Identity, b64d, b64e, fingerprint, verify
 from .lists import ListsMixin
 from .money import MoneyMixin
 from .presence import PresenceMixin
+from .trips import TripsMixin, trip_days
 from .store import Contact, Store
 from .transport import DeliveryError, HttpTransport
 
 log = logging.getLogger("confer")
 
-GRANTS = ("plans", "autoconfirm", "files", "notes", "intros", "lists", "money", "location")
-DEFAULT_GRANTS = ["plans", "files", "notes", "intros", "lists", "money"]  # location is opt-in
+GRANTS = ("plans", "autoconfirm", "files", "notes", "intros", "lists", "money", "location", "trips")
+DEFAULT_GRANTS = ["plans", "files", "notes", "intros", "lists", "money", "trips"]  # location is opt-in
 KEY_GRACE_SECONDS = 30 * 24 * 3600  # keep answering on a rotated-away key this long
 INTRO_TTL_SECONDS = 14 * 24 * 3600
 MAX_PENDING_INTROS = 20  # per introducer
@@ -113,6 +116,10 @@ class PlansProvider:
             for idx in self._busy_slots(plan, holds):
                 slot = Interval.from_wire(plan["slots"][idx])
                 out.extend(expand(slot, plan.get("rrule"), plan.get("tz", "UTC"), count=None, window=window))
+        if self.node.config.get("trips_block_calendar", True):  # you're away for the whole trip
+            for trip in self.node.store.all_trips():
+                if trip["status"] != "cancelled" and not trip.get("leaving") and (span := trip_days(trip)).overlaps(window):
+                    out.append(span)
         return out
 
     def _busy_slots(self, plan: dict, holds: bool) -> list[int]:
@@ -126,7 +133,7 @@ class PlansProvider:
         return []
 
 
-class Node(ListsMixin, MoneyMixin, PresenceMixin):
+class Node(ListsMixin, MoneyMixin, PresenceMixin, TripsMixin):
     def __init__(
         self,
         home: Path,
@@ -808,6 +815,7 @@ class Node(ListsMixin, MoneyMixin, PresenceMixin):
             **self._list_handlers(),
             **self._money_handlers(),
             **self._presence_handlers(),
+            **self._trip_handlers(),
             "pair.accept": self._on_pair_accept,
             "plan.propose": self._on_plan_propose,
             "plan.respond": self._on_plan_respond,
@@ -1064,7 +1072,7 @@ class Node(ListsMixin, MoneyMixin, PresenceMixin):
         return f"{a:%a %b %d %H:%M}-{b:%H:%M} {a.tzname()}"
 
     def calendar_ics(self) -> str:
-        """Confirmed plans I'm attending, as an iCalendar feed."""
+        """Confirmed plans I'm attending and my trips (with timed itinerary items), as an iCalendar feed."""
         lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Confer//EN", "CALSCALE:GREGORIAN"]
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(self.now()))
         for plan in self.store.plans():
@@ -1085,6 +1093,26 @@ class Node(ListsMixin, MoneyMixin, PresenceMixin):
             if plan.get("rrule"):
                 lines.append(f"RRULE:{plan['rrule'].removeprefix('RRULE:')}")
             lines.append("END:VEVENT")
+        for trip in self.store.all_trips():
+            if trip["status"] == "cancelled" or trip.get("leaving"):
+                continue
+            end_excl = (date.fromisoformat(trip["end_date"]) + timedelta(days=1)).strftime("%Y%m%d")
+            where = f" — {trip['destination']}" if trip.get("destination") else ""
+            lines += ["BEGIN:VEVENT", f"UID:trip-{trip['id']}@confer", f"DTSTAMP:{stamp}",
+                      f"DTSTART;VALUE=DATE:{trip['start_date'].replace('-', '')}", f"DTEND;VALUE=DATE:{end_excl}",
+                      f"SUMMARY:{_ics_text('🧳 ' + trip['title'] + where)}", "TRANSP:TRANSPARENT", "END:VEVENT"]
+            for item in trip["itinerary"]:
+                if not item["start"]:
+                    continue
+                start = parse_dt(item["start"])
+                end = parse_dt(item["end"]) if item["end"] else start + timedelta(hours=1)
+                desc = " · ".join(x for x in (item["confirmation"] and f"Confirmation {item['confirmation']}", item["details"], item["url"]) if x)
+                lines += ["BEGIN:VEVENT", f"UID:trip-{trip['id']}-{item['id']}@confer", f"DTSTAMP:{stamp}",
+                          f"DTSTART:{start:%Y%m%dT%H%M%SZ}", f"DTEND:{end:%Y%m%dT%H%M%SZ}",
+                          f"SUMMARY:{_ics_text(item['title'])}", f"DESCRIPTION:{_ics_text(desc)}"]
+                if item["location"]:
+                    lines.append(f"LOCATION:{_ics_text(item['location'])}")
+                lines.append("END:VEVENT")
         lines.append("END:VCALENDAR")
         return "\r\n".join(_ics_fold(line) for line in lines) + "\r\n"
 

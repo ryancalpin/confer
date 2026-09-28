@@ -39,6 +39,7 @@ GRANT_HELP = {
     "money": ("Money", "Can send you expense shares and payments to confirm. Confer never moves money."),
     "location": ("Status & location", "Sensitive: can send you their status, ETA and live location. "
                  "Off by default — only for people you meet up with."),
+    "trips": ("Trips", "Can add you to trips they organize (itinerary, rides, rooms, tasks, polls)."),
 }
 
 

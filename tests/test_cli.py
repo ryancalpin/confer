@@ -94,3 +94,32 @@ def test_cli_lists_money_and_share(net, capsys):
     assert "on my way" in out and "ETA 20 min" in out
     assert run(capsys, "--home", ah, "config", "pay_link", "https://venmo.com/u/alex")[0] == 0
     assert run(capsys, "--home", ah, "config", "currency", "euro")[0] == 1
+
+
+def test_cli_trip_flow(net, capsys):
+    alex, sam = net.node("alex", tz="America/Chicago"), net.node("sam", tz="America/Chicago")
+    net.pair(alex, sam)
+    ah, sh = str(alex.home), str(sam.home)
+    code, out, _ = run(capsys, "--home", ah, "trip", "new", "Tahoe", "--with", "sam", "--start", "2031-03-20", "--end", "2031-03-23", "--dest", "Lake Tahoe")
+    assert code == 0 and "Lake Tahoe" in out
+    tid = alex.trips()[0]["id"]
+    wait_for(lambda: sam.store.get_trip(tid), what="trip at sam")
+    assert run(capsys, "--home", ah, "trip", "add", tid, "Cabin", "--kind", "lodging", "--start", "2031-03-20T16:00", "--conf", "HMX42")[0] == 0
+    assert run(capsys, "--home", sh, "trip", "arrive", tid, "--when", "2031-03-20T13:30", "--how", "UA 1234", "--where", "RNO", "--pickup")[0] == 0
+    assert run(capsys, "--home", ah, "trip", "ride", tid, "--seats", "3", "--from", "RNO")[0] == 0
+    wait_for(lambda: sam.store.get_trip(tid)["rides"], what="ride")
+    assert run(capsys, "--home", sh, "trip", "join-ride", tid, "1")[0] == 0
+    assert run(capsys, "--home", ah, "trip", "poll", tid, "Dinner?", "Sushi", "Pizza")[0] == 0
+    wait_for(lambda: sam.store.get_trip(tid)["polls"], what="poll")
+    assert run(capsys, "--home", sh, "trip", "vote", tid, "1", "2")[0] == 0
+    assert run(capsys, "--home", ah, "trip", "task", tid, "Buy lift tickets", "--for", "sam", "--due", "2031-03-10")[0] == 0
+
+    def ready():
+        t = alex.store.get_trip(tid)
+        return t["rides"][0]["passengers"] and t["polls"][0]["votes"] and t["travelers"]
+
+    wait_for(ready, what="edits at alex")
+    code, out, _ = run(capsys, "--home", ah, "trip", "show", tid)
+    assert "Sat Mar 20" not in out  # 2031-03-20 is a Thursday
+    for needle in ("Thu Mar 20 16:00", "#HMX42", "UA 1234 RNO — needs pickup", "1/3 (sam)", "Pizza ×1", "Buy lift tickets — sam (due 2031-03-10)"):
+        assert needle in out, needle

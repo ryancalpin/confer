@@ -89,6 +89,11 @@ CREATE TABLE IF NOT EXISTS ledger (           -- expenses and settlements with o
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ledger_contact ON ledger(contact, created_at);
+CREATE TABLE IF NOT EXISTS trips (            -- trips (owned or joined)
+    id         TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS presence (         -- latest shared status/ETA/location per contact
     contact    TEXT PRIMARY KEY,
     data       TEXT NOT NULL,
@@ -308,6 +313,27 @@ class Store:
     def delete_list(self, list_id: str) -> None:
         self._x("DELETE FROM lists WHERE id=?", (list_id,))
 
+    # trips -----------------------------------------------------------------
+    def save_trip(self, trip: dict) -> None:
+        self._x("INSERT INTO trips(id,data,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+                (trip["id"], json.dumps(trip), time.time()))
+
+    def get_trip(self, trip_id: str) -> dict | None:
+        rows = self._q("SELECT data FROM trips WHERE id=?", (trip_id,))
+        return json.loads(rows[0]["data"]) if rows else None
+
+    def find_trip(self, prefix: str) -> dict | None:
+        if (t := self.get_trip(prefix)) or not prefix.isalnum():
+            return t
+        rows = self._q("SELECT data FROM trips WHERE substr(id, 1, ?) = ?", (len(prefix), prefix))
+        return json.loads(rows[0]["data"]) if len(rows) == 1 else None
+
+    def all_trips(self) -> list[dict]:
+        return [json.loads(r["data"]) for r in self._q("SELECT data FROM trips ORDER BY updated_at DESC")]
+
+    def delete_trip(self, trip_id: str) -> None:
+        self._x("DELETE FROM trips WHERE id=?", (trip_id,))
+
     # money ledger ----------------------------------------------------------
     def save_entry(self, entry: dict) -> None:
         self._x(
@@ -356,7 +382,7 @@ class Store:
             self._db.execute("UPDATE intros SET introducer=? WHERE introducer=?", (new, old))
             self._db.execute("UPDATE ledger SET contact=? WHERE contact=?", (new, old))
             self._db.execute("UPDATE presence SET contact=? WHERE contact=?", (new, old))
-            for table in ("lists", "ledger"):
+            for table in ("lists", "ledger", "trips"):
                 for r in self._db.execute(f"SELECT id, data FROM {table} WHERE instr(data, ?) > 0", (old,)).fetchall():  # noqa: S608
                     self._db.execute(f"UPDATE {table} SET data=? WHERE id=?", (_swap_json(r["data"], old, new), r["id"]))  # noqa: S608
             for r in self._db.execute("SELECT id, data FROM plans WHERE instr(data, ?) > 0", (old,)).fetchall():
