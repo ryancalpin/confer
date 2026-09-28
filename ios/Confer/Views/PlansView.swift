@@ -108,7 +108,9 @@ struct PlanDetailView: View {
                             Task { if await model.act("confer_respond", ["plan_id": plan.planId, "decision": "decline", "note": note]) { dismiss() } }
                         }
                     }
-                    .onAppear { picked = Set(plan.options.filter { $0.freeForMe == true }.map(\.n)) }
+                    .task(id: plan.planId) {  // once per plan, so scrolling can't reset the user's picks
+                        if picked.isEmpty { picked = Set(plan.options.filter { $0.freeForMe == true }.map(\.n)) }
+                    }
                 } else {
                     Section(plan.chosen == nil ? "Options" : "When") {
                         ForEach(plan.options) { opt in

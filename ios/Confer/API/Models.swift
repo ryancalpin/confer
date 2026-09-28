@@ -151,6 +151,8 @@ struct Ride: Decodable, Hashable, Identifiable {
     let from: String
     let leavesAt: String
     let passengers: [String]
+    let joined: Bool
+    let driving: Bool
 }
 
 struct Room: Decodable, Hashable, Identifiable {
@@ -158,6 +160,7 @@ struct Room: Decodable, Hashable, Identifiable {
     let name: String
     let beds: Int
     let occupants: [String]
+    let joined: Bool
 }
 
 struct TripTask: Decodable, Hashable, Identifiable {

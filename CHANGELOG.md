@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0
+- **Native iOS app** (`ios/`, SwiftUI, iOS 17+):
+  - **Tabs:** Inbox (live ETAs, and everything waiting on you, with inline
+    actions), Plans (answer with preferred times, propose), Trips
+    (itinerary, arrivals, rides, rooms, tasks, polls, trip expenses), Lists
+    and Money. People and Settings (permission toggles, invites with the
+    share sheet, introductions) open from the Inbox.
+  - **Status sharing,** including one-tap location that is only read when
+    asked for.
+  - **Security:** the API token lives in the Keychain.
+  - **Updates:** foreground polling, background refresh, and local
+    notifications.
+  - **Tests:** XCUITests against a scripted demo network
+    (`ios/tools/demo_network.py`), plus a macOS CI build.
+- **Backend:**
+  - Generated plan options never fall in the past.
+  - New tools `confer_cancel_money` and `confer_stop_sharing` (39 tools in total).
+
 ## 0.4.0
 - **Trips** (`confer trip ...`, `trip.share` / `trip.op` / `trip.close`, grant `trips`):
   - itinerary: flights, lodging, activities, with confirmation codes and links;

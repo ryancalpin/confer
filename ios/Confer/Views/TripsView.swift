@@ -149,7 +149,7 @@ struct TripDetailView: View {
         if !t.rides.isEmpty {
             Section("Rides") {
                 ForEach(t.rides) { r in
-                    let mine = r.passengers.contains(model.me?.name ?? "")
+                    let mine = r.joined
                     HStack {
                         VStack(alignment: .leading) {
                             Text("\(r.driverName)'s car").font(.headline)
@@ -157,7 +157,7 @@ struct TripDetailView: View {
                             Text("\(r.passengers.count)/\(r.seats) · \(r.passengers.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if r.driverName != model.me?.name {
+                        if !r.driving {
                             Button(mine ? "Leave" : "Join") { op(t, mine ? "ride.leave" : "ride.join", ["id": r.id]) }
                                 .buttonStyle(.bordered).disabled(!mine && r.passengers.count >= r.seats)
                         }
@@ -171,7 +171,7 @@ struct TripDetailView: View {
         if !t.rooms.isEmpty {
             Section("Rooms") {
                 ForEach(t.rooms) { r in
-                    let mine = r.occupants.contains(model.me?.name ?? "")
+                    let mine = r.joined
                     HStack {
                         VStack(alignment: .leading) {
                             Text(r.name).font(.headline)
@@ -266,6 +266,15 @@ struct TripForm: View {
     @State private var amount = ""
     @State private var destination = ""
     @State private var status = "planning"
+    @State private var saving = false
+
+    private var valid: Bool {
+        switch kind {
+        case .itinerary, .room, .task, .poll, .edit: !title.trimmingCharacters(in: .whitespaces).isEmpty
+        case .expense: !title.isEmpty && !amount.isEmpty
+        case .travel, .ride: true
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -273,7 +282,10 @@ struct TripForm: View {
                 .navigationTitle(titleText)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) { Button("Save") { Task { if await save() { dismiss() } } } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") { Task { saving = true; if await save() { dismiss() }; saving = false } }
+                            .disabled(saving || !valid)
+                    }
                 }
         }
         .onAppear {

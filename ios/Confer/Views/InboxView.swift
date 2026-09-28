@@ -17,8 +17,7 @@ struct InboxView: View {
                             if let t = p.text, !t.isEmpty { Text(t) }
                             HStack {
                                 if let eta = p.etaMinutes { Label("\(eta) min", systemImage: "clock") }
-                                if let lat = p.lat, let lon = p.lon,
-                                   let url = URL(string: "https://maps.apple.com/?ll=\(lat),\(lon)&q=\(p.contact)") {
+                                if let lat = p.lat, let lon = p.lon, let url = mapURL(lat: lat, lon: lon, label: p.contact) {
                                     Link(destination: url) { Label("Map", systemImage: "map") }
                                 }
                             }
@@ -79,6 +78,13 @@ struct InboxView: View {
     }
 }
 
+/// Apple Maps link; the label is a name chosen by someone else, so it's encoded as a query item.
+func mapURL(lat: Double, lon: Double, label: String) -> URL? {
+    var c = URLComponents(string: "https://maps.apple.com/")
+    c?.queryItems = [URLQueryItem(name: "ll", value: "\(lat),\(lon)"), URLQueryItem(name: "q", value: label)]
+    return c?.url
+}
+
 struct IntroRow: View {
     @EnvironmentObject var model: AppModel
     let item: InboxItem
@@ -106,6 +112,7 @@ struct ShareStatusView: View {
     @State private var planId = ""
     @State private var withLocation = false
     @State private var hours = 2.0
+    @State private var sending = false
 
     var body: some View {
         NavigationStack {
@@ -136,7 +143,9 @@ struct ShareStatusView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Share") {
+                        sending = true
                         Task {
+                            defer { sending = false }
                             var args: [String: Any] = ["text": text, "ttl_minutes": Int(hours * 60)]
                             if let m = Int(eta) { args["eta_minutes"] = m }
                             if !planId.isEmpty { args["plan_id"] = planId } else { args["to_contacts"] = Array(people) }
@@ -147,7 +156,7 @@ struct ShareStatusView: View {
                             if await model.act("confer_share_status", args) { dismiss() }
                         }
                     }
-                    .disabled(planId.isEmpty && people.isEmpty)
+                    .disabled(sending || (planId.isEmpty && people.isEmpty))
                 }
             }
         }

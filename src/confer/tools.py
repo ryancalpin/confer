@@ -553,15 +553,16 @@ def confer_create_trip(node: "Node", title: str, with_contacts: list[str], start
 @tool()
 def confer_trips(node: "Node") -> list[dict]:
     """All trips with full detail: itinerary, arrivals/departures, rides, rooms, tasks, polls (ids included)."""
-    out = []
+    out, me = [], node.identity.agent_id
     for t in node.trips():
         people = {t["owner"]: t["owner_name"], **t["members"]}
         out.append({**{k: t[k] for k in ("id", "title", "destination", "start_date", "end_date", "status", "owner_name", "notes",
                                           "itinerary", "rides", "rooms", "tasks", "links")},
                     "mine": t.get("role") == "owner", "people": list(people.values()),
                     "travelers": list(t["travelers"].values()),
-                    "rides": [{**r, "passengers": list(r["passengers"].values())} for r in t["rides"]],
-                    "rooms": [{**r, "occupants": list(r["occupants"].values())} for r in t["rooms"]],
+                    "rides": [{**r, "passengers": list(r["passengers"].values()), "joined": me in r["passengers"],
+                               "driving": r["driver_id"] == me} for r in t["rides"]],
+                    "rooms": [{**r, "occupants": list(r["occupants"].values()), "joined": me in r["occupants"]} for r in t["rooms"]],
                     "polls": [{"id": p["id"], "question": p["question"], "closed": p["closed"],
                                "options": [{"option": o["id"], "text": o["text"], "votes": sum(v == o["id"] for v in p["votes"].values())}
                                            for o in p["options"]],

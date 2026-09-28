@@ -172,11 +172,11 @@ struct IntroduceView: View {
             Form {
                 Picker("Introduce", selection: $a) {
                     Text("Choose…").tag("")
-                    ForEach(model.contacts) { Text($0.name).tag($0.name) }
+                    ForEach(model.contacts.filter { $0.status == "active" }) { Text($0.name).tag($0.name) }
                 }
                 Picker("to", selection: $b) {
                     Text("Choose…").tag("")
-                    ForEach(model.contacts.filter { $0.name != a }) { Text($0.name).tag($0.name) }
+                    ForEach(model.contacts.filter { $0.status == "active" && $0.name != a }) { Text($0.name).tag($0.name) }
                 }
                 TextField("Why they should meet (optional)", text: $note)
                 Text("Each of them approves; then their agents connect directly.").font(.footnote).foregroundStyle(.secondary)
@@ -259,6 +259,7 @@ final class Locator: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func current() async -> CLLocation? {
+        if continuation != nil { return nil }  // a request is already in flight; never orphan its continuation
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
         return await withCheckedContinuation { c in
             continuation = c
