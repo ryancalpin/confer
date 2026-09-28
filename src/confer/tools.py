@@ -414,11 +414,29 @@ def confer_replies(node: "Node", msg_id: str) -> list[dict]:
     return [{"from": i["summary"], "text": i["payload"].get("text", "")} for i in node.replies(msg_id)]
 
 
+def outgoing_dir(node: "Node") -> Path:
+    d = node.home / "outgoing"
+    d.mkdir(exist_ok=True)
+    return d
+
+
 @tool(human_ok=True)
 def confer_send_file(node: "Node", to: str, path: str, note: str = "") -> dict:
-    """Send a file on this machine (<=10 MB), end-to-end encrypted, to a contact."""
-    node.send_file(to, Path(path), note)
-    return {"sent": True}
+    """Send a file (<=10 MB), end-to-end encrypted, to a contact. For safety, agents can only send files the human
+    placed in the node's outgoing folder (~/.confer/outgoing/); `path` is a file name or path inside it."""
+    root = outgoing_dir(node).resolve()
+    target = (root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        raise ToolError(f"put the file in {root} first — agents can't read other files on this machine")
+    node.send_file(to, target, note)
+    return {"sent": True, "file": target.name}
+
+
+@tool()
+def confer_outgoing_files(node: "Node") -> list[str]:
+    """Files the human placed in the outgoing folder, ready for confer_send_file."""
+    root = outgoing_dir(node)
+    return sorted(p.name for p in root.iterdir() if p.is_file())
 
 
 # ------------------------------------------------------------------- lists

@@ -106,6 +106,7 @@ class ConferServer:
         self.relay_enabled = relay
         self.tick_seconds = tick_seconds
         self.ip_limiter = RateLimiter(120, 60)
+        self.auth_fail_limiter = RateLimiter(10, 60)  # wrong API tokens per IP per minute
         self.relay_limiter = RateLimiter(300, 60)
         self.httpd = ThreadingHTTPServer((host, port), _Handler)
         self.httpd.daemon_threads = True
@@ -271,6 +272,8 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "GET" and not self.app.ip_limiter.allow(self._client()):  # POSTs are limited in do_POST
             return self._send(429, {"ok": False, "error": "rate limited"})
         code, raw = api.handle(self.app.node, method, path, self.headers, body, self.app.public_url)
+        if code == 401 and not self.app.auth_fail_limiter.allow(self._client()):
+            code, raw = 429, b'{"ok": false, "error": "too many failed attempts"}'
         self._send(code, raw)
 
     def do_GET(self) -> None:  # noqa: N802
@@ -314,9 +317,14 @@ class _Handler(BaseHTTPRequestHandler):
             body_bytes = self.rfile.read(length)
             return self._send_ui(webui.handle_post(self.app.node, request_token, body_bytes, ctype, public_url=self.app.public_url))
         if path.startswith(api.PREFIX + "/"):
-            if not api.enabled(self.app.node) or not api.authorized(self.app.node, self.headers.get("Authorization")):
+            if not api.enabled(self.app.node):
+                self.close_connection = True
+                return self._send(404, {"ok": False, "error": "not found"})
+            if not api.authorized(self.app.node, self.headers.get("Authorization")):
                 self.close_connection = True  # never read a body for an unauthenticated caller
-                return self._send(404 if not api.enabled(self.app.node) else 401, {"ok": False, "error": "not found" if not api.enabled(self.app.node) else "missing or wrong API token"})
+                if not self.app.auth_fail_limiter.allow(self._client()):
+                    return self._send(429, {"ok": False, "error": "too many failed attempts"})
+                return self._send(401, {"ok": False, "error": "missing or wrong API token"})
             if length < 0 or length > api.MAX_BODY:
                 self.close_connection = True
                 return self._send(413, {"ok": False, "error": "body too large"})

@@ -7,12 +7,12 @@ description: Coordinate with the user's trusted contacts through their personal 
 
 Confer connects this user's agent to their trusted contacts' agents. Prefer the
 MCP tools (`confer_*`) when they're connected. Otherwise use the CLI, where every
-command takes `--json`.
+command accepts the global `--json` flag (`confer --json inbox`).
 
 ## Do this
 - **Planning** "with Sam": `confer_propose_plan`. Pass a time window, or
   `explicit_times`, plus `between` for a time-of-day range. The other agents
-  check their calendars privately, and the plan confirms on its own.
+  check their calendars privately. Contacts who granted `autoconfirm` answer automatically; others ask their human. The plan confirms once a time works.
 - **Trips:** `confer_create_trip`, then `confer_trip_edit` to add the
   itinerary, your arrival (`traveler.set`), rides, rooms, tasks and polls.
   `confer_trips` shows everything.

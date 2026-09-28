@@ -1,6 +1,6 @@
 """Drive a Confer node from a Claude agent loop (Anthropic Messages API tool use).
 
-    pip install anthropic confer
+    pip install anthropic "confer @ git+https://github.com/ryancalpin/confer"
     export CONFER_URL=https://alex.example.ts.net CONFER_TOKEN=$(confer api token | awk '/Token/ {print $2}')
     python anthropic_tools.py "Plan dinner with Sam next week and add it to our Tahoe trip budget"
 

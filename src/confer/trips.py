@@ -134,6 +134,11 @@ def apply_op(trip: dict, actor: str, actor_name: str, op: str, a: dict) -> bool:
         trip["rides"] = [r for r in trip["rides"] if r["driver_id"] != actor]
         for r in trip["rooms"]:
             r["occupants"].pop(actor, None)
+        for p in trip["polls"]:
+            p["votes"].pop(actor, None)
+        for t in trip["tasks"]:
+            if t["assignee_id"] == actor:
+                t.update(assignee_id="", assignee_name="")
         return True
 
     if op.startswith("itinerary."):

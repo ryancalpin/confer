@@ -133,3 +133,18 @@ def test_validation_of_hostile_snapshots():
     assert T.validate_wire_trip(xss, "O")["itinerary"][0]["url"] == ""
     with pytest.raises(T.TripError):
         T.new_trip(title="x", owner="O", owner_name="o", members={}, start_date="2031-01-05", end_date="2031-01-02")
+
+
+def test_leaving_drops_votes_and_task_assignments(crew):
+    alex, sam, priya, trip = crew
+    tid = trip["id"]
+    alex.trip_op(tid, "poll.add", question="Where?", options=["Beach", "Mountains"])
+    alex.trip_op(tid, "task.add", text="Bring snacks", assignee="priya")
+    wait_for(lambda: trip_at(priya, tid)["polls"], what="poll")
+    poll = trip_at(priya, tid)["polls"][0]["id"]
+    priya.trip_op(tid, "poll.vote", id=poll, option="o1")
+    wait_for(lambda: trip_at(alex, tid)["polls"][0]["votes"], what="vote")
+    priya.trip_op(tid, "leave")
+    wait_for(lambda: priya.identity.agent_id not in trip_at(alex, tid)["members"], what="left")
+    t = trip_at(alex, tid)
+    assert t["polls"][0]["votes"] == {} and t["tasks"][0]["assignee_id"] == ""

@@ -691,7 +691,6 @@ def page_settings(ctx: Ctx) -> str:
             + check("tentative_holds", "1", "Hold offered times while a plan is being decided", checked=bool(cfg.get("tentative_holds", True)))
             + field_("Default currency", "currency", cfg.get("currency", "USD"), attrs=' maxlength="3" autocapitalize="characters"')
             + field_("Pay link (shown to people who owe you)", "pay_link", cfg.get("pay_link", ""), type_="url", placeholder="https://venmo.com/u/you")
-            + field_("Notification webhook (optional)", "notify_webhook", cfg.get("notify_webhook", ""), type_="url")
             + field_("Remind people after (hours)", "nudge_after_hours", cfg.get("nudge_after_hours", 24), type_="number", attrs=' min="1" max="720" step="any"')
             + button("Save settings", "wide"))
     out = [form(ctx, "save_settings", f'<div class="card">{body}</div>')]
@@ -699,6 +698,9 @@ def page_settings(ctx: Ctx) -> str:
         out.append('<div class="card"><div class="card-title">Notification command</div>'
                    f'<div class="mono">{e(cfg["notify_cmd"])}</div>'
                    '<div class="meta">Runs a program on the node, so it can only be changed with the CLI: <code>confer config notify_cmd …</code></div></div>')
+    out.append('<div class="card"><div class="card-title">Notification webhook</div>'
+               f'<div class="meta">{"Set" if cfg.get("notify_webhook") else "Not set"}. It receives every inbox event, so it can only '
+               'be changed with the CLI: <code>confer config notify_webhook https://…</code></div></div>')
     feed = f"{ctx.public_url}/calendar/{cfg.get('feed_token', '')}.ics"
     out.append(section("Calendar"))
     out.append('<div class="card"><div class="card-title">Subscribe to your confirmed plans</div>'

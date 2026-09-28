@@ -71,7 +71,7 @@ connections.
 | Route | Body | Relay checks |
 |---|---|---|
 | `POST /relay/v1/send` | `{"envelope": E}` | outer signature + freshness of E, per-sender rate limit, per-recipient cap. Stores E under `E.to`. |
-| `POST /relay/v1/fetch` | `{"op":"fetch","agent_id","ts","nonce","sig"}` | `sig` by `agent_id` over the canonical body without `sig`, and `ts` within ±300 s. Returns up to N envelopes. |
+| `POST /relay/v1/fetch` | `{"op":"fetch","agent_id","ts","nonce","sig"}` | `sig` by `agent_id` over the canonical body without `sig`, and `ts` within ±300 s. Returns up to 100 envelopes. Relays rate-limit senders to 300 envelopes a minute, hold at most 1000 per recipient, and accept at most 500 ids per ack. |
 | `POST /relay/v1/ack` | `{"op":"ack","agent_id","ts","nonce","ids":[…],"sig"}` | same signature check; deletes those ids from that agent's mailbox. |
 
 Relays drop envelopes older than 7 days. A relay can see metadata (who
@@ -92,6 +92,7 @@ Grants say what *that contact* may do with *my* node:
 | `lists` | share lists with me (`list.share`) |
 | `money` | send expense shares and payments for me to confirm (`money.expense`, `money.settle`) |
 | `location` | send me status / ETA / location (`presence.update`); off by default |
+| `trips` | add me to trips they organize (`trip.share`) |
 
 Envelopes from non-contacts are refused, except `pair.request`. A pending
 contact (you accepted their invite but they haven't confirmed yet) may only
@@ -183,7 +184,7 @@ plan's own holds are ignored when re-evaluating that plan.
 
 **Reminders.** The organizer MAY send one `plan.nudge` per revision to each
 participant who hasn't answered. Due times:
-- with a deadline: in its last quarter, and at least one hour before it;
+- with a deadline: in the last quarter of the response window (from proposal to deadline), or in the last hour if that is longer;
 - without a deadline: after a configurable delay (default 24 h).
 
 The receiver ignores a nudge if it has already answered.
@@ -286,7 +287,7 @@ minor units (cents) with an ISO 4217 currency code.
 | `money.expense` | payer → each person sharing the cost | `{entry_id, title, currency, total_cents, share_cents, people, note, plan_id, pay_link}` |
 | `money.settle` | the person paying back → the person owed | `{entry_id, currency, cents, note}` ("I paid you") |
 | `money.ack` | receiver → creator | `{entry_id, status: accepted\|disputed, note}` |
-| `money.cancel` | creator → receiver | `{entry_id}` |
+| `money.cancel` | creator → receiver | `{entry_id}`. It can be sent even after acceptance, because it only gives up the creator's own claim. |
 
 - **Permission.** Receiving `money.expense` or `money.settle` requires the
   `money` grant. Each creates a pending entry that the owner accepts or
@@ -314,6 +315,41 @@ minor units (cents) with an ISO 4217 currency code.
   and MUST drop it at `expires_at`, capped at 24 h. No history is kept.
 - **Where coordinates come from.** The node has no location of its own.
   Coordinates come from the owner's device, when the owner explicitly shares.
+
+## 7f. Trips
+
+Trips are hub-and-spoke: the organizer's node holds the master copy, just as
+with lists.
+
+| type | from → to | body |
+|---|---|---|
+| `trip.share` | owner → each member | `{trip: {id, rev, title, destination, start_date, end_date, tz, notes, status, owner, owner_name, members, itinerary, travelers, rides, rooms, tasks, polls, links}}`. A higher `rev` replaces the stored copy; any other `rev` is ignored. A member no longer in `members` deletes their copy. |
+| `trip.op` | member → owner | `{trip_id, op, args}`, where `op` is one of `itinerary.add/update/remove`, `traveler.set`, `ride.offer/join/leave/cancel`, `room.add/join/leave/remove`, `task.add/done/undone/assign/remove`, `poll.add/vote/close`, `leave` |
+| `trip.close` | owner → member | `{trip_id}`: you left the trip, or it was removed |
+
+- **Permission.** Receiving `trip.share` requires the `trips` grant.
+- **Rules the owner enforces:**
+  - members edit only their own `travelers` entry;
+  - one car and one room per person, and rides and rooms respect capacity;
+  - only the creator or the owner can remove itinerary items, tasks and
+    polls;
+  - leaving drops your seat, bed, votes and task assignments;
+  - `trip.update` (details, dates, status) is owner-only and applied
+    locally.
+- **Limits:**
+  - 50 members;
+  - itinerary 200, tasks 200, polls 20 (10 options each), rides 20, rooms 30;
+  - 300 characters for most text fields;
+  - 50 trips per sharing contact.
+- **Links and https.** Itinerary links are `https://` only.
+- **Busy time.** Trip days count as busy time for the members.
+
+## 7g. Messages that need no grant
+
+These act only on things both sides already share, so they need no grant:
+`plan.respond`, `plan.final`, `plan.cancel`, `plan.nudge`, `list.op`,
+`list.close`, `money.ack`, `money.cancel`, `presence.clear`, `trip.op`,
+`trip.close`, `key.rotate`, `pair.accept`.
 
 ## 8. Versioning
 

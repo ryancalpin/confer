@@ -1,9 +1,9 @@
 # Plug Confer into any agent or harness
 
 Every surface below is generated from one tool catalog (`src/confer/tools.py`,
-36 tools), so they all behave the same way. Tools that act on the human's behalf
+37 tools), so they all behave the same way. Tools that act on the human's behalf
 are marked **needs the human's OK**:
-- in MCP, via `annotations.destructiveHint`;
+- in MCP, via `annotations.destructiveHint` (read-only tools also carry `readOnlyHint`);
 - in the exported schemas, as a `[needs the human's OK]` description prefix;
 - in the REST API, by requiring the `Confer-Human-Approved: true` header.
 
@@ -15,14 +15,15 @@ are marked **needs the human's OK**:
 | **Gemini CLI** | MCP (stdio) | `~/.gemini/settings.json`: `{"mcpServers": {"confer": {"command": "confer", "args": ["mcp"]}}}` |
 | **Cursor** | MCP (stdio) | `~/.cursor/mcp.json`: `{"mcpServers": {"confer": {"command": "confer", "args": ["mcp"]}}}` |
 | **VS Code (Copilot agent mode)** | MCP (stdio) | `.vscode/mcp.json`: `{"servers": {"confer": {"type": "stdio", "command": "confer", "args": ["mcp"]}}}` |
-| **Goose** | MCP extension | `goose configure` → Add Extension → Command-line → `confer mcp` |
+| **Goose** | MCP extension | `goose configure` → Add Extension → Command-line Extension → `confer mcp` |
 | **Hermes Agent** | MCP + skill | `config.yaml`: `mcp_servers: {confer: {command: confer, args: [mcp]}}`, plus [`hermes/SKILL.md`](hermes/SKILL.md) in `~/.hermes/skills/confer/` |
-| **OpenClaw, or any skill-based agent with a shell** | CLI skill | Point the agent at [`claude-code/SKILL.md`](claude-code/SKILL.md). Every command also takes `--json`. |
+| **OpenClaw** | MCP + skill | `~/.openclaw/openclaw.json`: `{"mcp": {"servers": {"confer": {"command": "confer", "args": ["mcp"]}}}}`, or `openclaw mcp set`. Then copy [`claude-code/SKILL.md`](claude-code/SKILL.md) to `<workspace>/skills/confer/SKILL.md`. |
+| **Any skill-based agent with a shell** | CLI skill | Point it at [`claude-code/SKILL.md`](claude-code/SKILL.md). Use the global `--json` flag: `confer --json inbox`. |
 | **Any local MCP client over HTTP** | streamable HTTP | `confer mcp --http --port 3069` → `http://127.0.0.1:3069/mcp` (localhost only; no auth) |
 | **Anthropic API / Claude Agent SDK apps** | function tools | [`python/anthropic_tools.py`](python/anthropic_tools.py), or `confer tools export --format anthropic` |
 | **OpenAI API / Agents SDK / LangChain / LlamaIndex** | function tools | [`python/openai_tools.py`](python/openai_tools.py), or `confer tools export --format openai` |
 | **Gemini API / Vertex** | function declarations | `confer tools export --format gemini` |
-| **n8n, Zapier, Make, Home Assistant, custom apps, the iOS app** | REST + webhooks | `confer api enable`. Use `POST /api/v1/tools/<name>` and `GET /api/v1/openapi.json`. Push events with `confer config notify_webhook https://...` |
+| **n8n, Zapier, Make, Home Assistant, custom apps, the iOS app (`ios/`)** | REST + webhooks | `confer api enable`. Use `POST /api/v1/tools/<name>` and `GET /api/v1/openapi.json`. Push events with `confer config notify_webhook https://...` (CLI-only) |
 | **Other A2A agents** | A2A v1.0 | Every node is an A2A agent (`/.well-known/agent-card.json`). Peers must be paired, and messages are Confer envelopes. |
 
 ## Picking a surface

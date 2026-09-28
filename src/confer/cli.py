@@ -15,7 +15,7 @@ from .availability import Interval
 from .node import GRANTS, Node, NodeError, check_url
 
 CONFIG_KEYS = {"name", "endpoint", "relay", "tz", "hours_start", "hours_end", "buffer_minutes", "calendar", "notify_webhook", "notify_cmd",
-               "currency", "pay_link", "tentative_holds", "nudge_after_hours"}
+               "currency", "pay_link", "tentative_holds", "trips_block_calendar", "nudge_after_hours"}
 
 
 def home_dir(args: argparse.Namespace) -> Path:
@@ -84,7 +84,7 @@ def cmd_config(a: argparse.Namespace, node: Node) -> None:
         value = check_url(a.value, allow_query=a.key in ("notify_webhook", "pay_link"))
         if a.key == "pay_link" and not str(value).startswith("https://"):
             raise NodeError("pay_link must start with https://")
-    if a.key == "tentative_holds":
+    if a.key in ("tentative_holds", "trips_block_calendar"):
         value = a.value.lower() in ("1", "true", "yes", "on")
     if a.key == "nudge_after_hours":
         value = float(a.value)
@@ -128,7 +128,7 @@ def cmd_contacts(a: argparse.Namespace, node: Node) -> None:
 
 
 def cmd_grant(a: argparse.Namespace, node: Node) -> None:
-    c = node.set_grants(a.name, a.grants)
+    c = node.set_grants(a.name, ",".join(a.grants))
     print(f"{c.name}: {', '.join(c.grants) or 'no grants'}")
 
 
@@ -575,9 +575,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--grant", help=grants_help)
     s.set_defaults(fn=cmd_accept)
     sub.add_parser("contacts").set_defaults(fn=cmd_contacts)
-    s = sub.add_parser("grant", help="change a contact's grants, e.g. +autoconfirm or -files")
+    s = sub.add_parser("grant", help="change a contact's grants, e.g. +autoconfirm,-files")
     s.add_argument("name")
-    s.add_argument("grants")
+    s.add_argument("grants", nargs="+", help="absolute (plans,files) or relative (+location,-money)")
     s.set_defaults(fn=cmd_grant)
     s = sub.add_parser("remove", help="remove a contact")
     s.add_argument("name")

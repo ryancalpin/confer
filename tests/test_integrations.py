@@ -134,3 +134,47 @@ def test_mcp_stdio_lists_every_tool(tmp_path):
     assert names == set(T.TOOLS)
     assert "Alex" in res.content[0].text
     del mcp
+
+
+def test_remote_callers_cannot_read_files_or_aim_fetches_inward(tmp_path, monkeypatch):
+    import socket
+
+    from confer import settings as S
+    from confer.node import Node
+
+    node = Node.init(tmp_path / "n", "Alex")
+    secret = tmp_path / "n" / "identity.key"
+    for path in (str(secret), "../identity.key", "/etc/passwd"):
+        with pytest.raises(T.ToolError, match="outgoing"):
+            T.call(node, "confer_send_file", {"to": "x", "path": path})
+    (tmp_path / "n" / "outgoing" / "menu.pdf").write_bytes(b"%PDF")
+    assert T.call(node, "confer_outgoing_files", {}) == ["menu.pdf"]
+    with pytest.raises(T.ToolError, match="webhook|CLI"):
+        T.call(node, "confer_update_settings", {"changes": {"notify_webhook": "https://evil.example.com"}})
+    fake = {"meta.internal": "169.254.169.254", "router.lan": "192.168.1.1", "local.host": "127.0.0.1", "cal.public": "93.184.216.34"}
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, *a, **k: [(0, 0, 0, "", (fake[host], 0))])
+    for host in ("meta.internal", "router.lan", "local.host"):
+        with pytest.raises(S.SettingsError, match="public"):
+            S.validate("calendar", f"https://{host}/cal.ics", remote=True)
+    assert S.validate("calendar", "webcal://cal.public/me.ics", remote=True) == "webcal://cal.public/me.ics"
+    with pytest.raises(S.SettingsError, match="https"):
+        S.validate("calendar", "http://cal.public/me.ics", remote=True)
+    assert S.validate("calendar", "~/cal.ics", remote=False) == "~/cal.ics"  # the CLI may use local files
+
+
+def test_wrong_tokens_are_rate_limited(net):
+    alex = net.node("alex")
+    alex.config["api_token"] = "right"
+    alex.save_config()
+    codes = [_req(alex.config["endpoint"] + "/api/v1/tools", "wrong")[0] for _ in range(12)]
+    assert codes[0] == 401 and codes[-1] == 429
+
+
+def test_hours_cross_check_uses_cleaned_values(tmp_path):
+    from confer import settings as S
+    from confer.node import Node
+
+    node = Node.init(tmp_path / "n", "Alex")
+    with pytest.raises(S.SettingsError, match="after"):
+        S.update(node, {"hours_start": " 23:00", "hours_end": "08:00"})
+    assert node.config["hours_start"] == "08:00"

@@ -9,13 +9,30 @@
   - polls;
   - a linked packing list and trip budget.
   - Trip days count as busy time, and the trip and its itinerary appear in the calendar feed.
-- **Integrations**: a single tool catalog (36 tools) drives:
+- **Integrations**: a single tool catalog (37 tools) drives:
   - MCP over stdio or streamable HTTP;
   - a REST API (`confer api enable`) with OpenAPI 3.1 and a `Confer-Human-Approved` header for sensitive tools;
   - function-calling exports (`confer tools export --format openai|anthropic|gemini|mcp|openapi`);
   - the Python `ConferClient`;
   - setup guides for many harnesses in `integrations/`.
 - **Settings validation** shared by every remote surface (`confer.settings`).
+- **Security review fixes:**
+  - Agents and API callers can only send files from `~/.confer/outgoing/`
+    (`confer_outgoing_files` lists them). This closed a hole where a stolen
+    API token could read arbitrary files.
+  - `notify_webhook` is CLI-only.
+  - Remote calendar URLs must be https and resolve to public addresses (no SSRF).
+  - Wrong API tokens are rate-limited.
+  - MCP tools carry `destructiveHint` / `readOnlyHint` annotations.
+- **Correctness fixes:**
+  - The hours cross-check now runs on cleaned values.
+  - Leaving a trip drops your votes and task assignments.
+  - `confer grant` accepts several arguments.
+  - `trips_block_calendar` can be set with `confer config`.
+- **Docs:**
+  - Every harness snippet was checked against official docs.
+  - OpenClaw has MCP and skill setup.
+  - The protocol spec now has trips (§7f) and lists the messages that need no grant (§7g).
 
 ## 0.3.0
 - **Shared lists** (`confer list ...`, `list.share` / `list.op` / `list.close`, grant `lists`): groceries, packing, "who's bringing what", with claims.

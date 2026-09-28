@@ -52,10 +52,31 @@ def _bind(node: Node, t: Tool) -> Any:
     return bound
 
 
+def _annotations(t: Tool) -> Any:
+    """MCP tool annotations: human-OK tools are 'destructive' (clients should confirm);
+    read-only tools say so. Returns None if the SDK has no ToolAnnotations type."""
+    try:
+        from mcp.types import ToolAnnotations
+    except ImportError:  # pragma: no cover
+        return None
+    read_only = not t.human_ok and t.name in READ_ONLY
+    return ToolAnnotations(title=t.name.removeprefix("confer_").replace("_", " "), readOnlyHint=read_only,
+                           destructiveHint=t.human_ok, openWorldHint=True)
+
+
+READ_ONLY = {"confer_whoami", "confer_events", "confer_settings", "confer_contacts", "confer_intros", "confer_inbox",
+             "confer_plans", "confer_replies", "confer_lists", "confer_balances", "confer_ledger", "confer_presence",
+             "confer_trips", "confer_trip_budget", "confer_outgoing_files"}
+
+
 def build(node: Node) -> Any:
     mcp = _server_class()("confer", instructions=INSTRUCTIONS)
     for t in TOOLS.values():
-        mcp.tool(name=t.name, description=t.full_description())(_bind(node, t))
+        ann = _annotations(t)
+        try:
+            mcp.tool(name=t.name, description=t.full_description(), annotations=ann)(_bind(node, t))
+        except TypeError:  # very old SDKs without annotations support
+            mcp.tool(name=t.name, description=t.full_description())(_bind(node, t))
     return mcp
 
 

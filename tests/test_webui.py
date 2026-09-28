@@ -302,7 +302,8 @@ def test_csp_has_a_nonce_matching_the_script_tag(net):
     assert again != csp  # a fresh nonce per response
 
 
-def test_settings_update_persists_and_is_validated(net):
+def test_settings_update_persists_and_is_validated(net, monkeypatch):
+    monkeypatch.setattr("confer.settings._public_host", lambda url, what: None)  # no DNS in tests
     alice = net.node("alice")
     alice.config["notify_cmd"] = "notify-send confer"
     alice.save_config()
@@ -323,13 +324,15 @@ def test_settings_update_persists_and_is_validated(net):
     for key, bad in (("calendar", "/etc/passwd"), ("calendar", "file:///etc/passwd"), ("calendar", "~/cal.json"),
                      ("tz", "Mars/Olympus"), ("hours_start", "25:00"), ("buffer_minutes", "999"),
                      ("pay_link", "http://insecure.example.com"), ("pay_link", "javascript:alert(1)"),
-                     ("notify_webhook", "ftp://x"), ("currency", "EURO"), ("endpoint", "not a url")):
+                     ("calendar", "http://plain.example.com/cal.ics"), ("currency", "EURO"), ("endpoint", "not a url")):
         page = act(alice, **{**good, key: bad})
         assert banner_error(page), f"{key}={bad!r} was accepted"
     cfg = saved_config(alice)
     assert cfg["calendar"] == "webcal://cal.example.com/me.ics" and cfg["tz"] == "Europe/London"
     act(alice, **{k: v for k, v in good.items() if k != "tentative_holds"})
     assert saved_config(alice)["tentative_holds"] is False  # unticked checkbox = off
+    act(alice, **{**good, "notify_webhook": "https://evil.example.com/hook"})
+    assert not saved_config(alice).get("notify_webhook")  # CLI-only: a leaked link can't redirect notifications
 
 
 def test_settings_keep_a_cli_configured_local_calendar(net):

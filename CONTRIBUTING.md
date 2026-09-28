@@ -18,6 +18,5 @@ uv venv && uv pip install -e '.[dev,mcp]'
 
 Good first areas:
 - a CalDAV busy-time provider;
-- key rotation (signed `key.rotate` to all contacts);
 - push-style relay delivery (long-poll);
 - a TypeScript implementation of the protocol.

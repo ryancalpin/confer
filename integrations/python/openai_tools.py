@@ -2,7 +2,7 @@
 The same schemas work with the OpenAI Agents SDK, LangChain and LlamaIndex
 (all accept JSON-Schema function tools).
 
-    pip install openai confer
+    pip install openai "confer @ git+https://github.com/ryancalpin/confer"
     export CONFER_URL=... CONFER_TOKEN=... OPENAI_MODEL=<your model>
     python openai_tools.py "Split the $120 cabin deposit with Sam and Priya"
 """

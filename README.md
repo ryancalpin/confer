@@ -82,6 +82,21 @@ Claude, Hermes, Codex, OpenClaw, or your own.
 
 ### Beyond planning
 
+- **Trips.** `confer trip new "Tahoe" --with Sam,Priya --start 2026-12-18 --end 2026-12-21`
+  sets up the trip, and everyone can then fill it in:
+  - **Itinerary:** flights, lodging and activities, with confirmation codes
+    (`confer trip add`).
+  - **Your own travel:** arrival, departure, and whether you need a pickup
+    (`confer trip arrive --pickup`).
+  - **Carpools and rooms:** capacity-checked (`ride`, `join-ride`, `room`,
+    `join-room`).
+  - **Tasks and polls:** assign tasks (`task --for Sam`) and vote on
+    decisions (`poll`, `vote`).
+  - **Budget:** the trip gets a shared packing list, and expenses tagged
+    with it add up in `confer trip budget`.
+  - **Calendar:** trip days count as busy time, and the itinerary shows up
+    in your calendar feed.
+
 - **Shared lists.**
   `confer list new "BBQ" --with Sam,Priya --item burgers --item buns`.
   Everyone can add items, check them off, or claim one ("I'll bring it").
@@ -107,25 +122,30 @@ There are three ways to manage it, all over the same node:
 
 | | Best for |
 |---|---|
-| **Phone app.** `confer serve` prints a private link; open it on your phone over Tailscale and use Share → Add to Home Screen. There are six tabs: Inbox · Plans · Lists · Money · People · Settings. Treat the link like a password; Settings can rotate it. | Day to day: approve plans, money requests and introductions; manage lists; see balances; share your ETA; edit each person's permissions and all settings. |
-| **Your AI assistant** (MCP, 28 tools) | Just ask: "plan dinner with Sam Friday", "add charcoal to the BBQ list", "what do I owe Priya?". Money, location and approvals always wait for your OK. |
+| **Phone app.** `confer serve` prints a private link; open it on your phone over Tailscale and use Share → Add to Home Screen. There are seven tabs: Inbox · Plans · Trips · Lists · Money · People · Settings. Treat the link like a password; Settings can rotate it. | Day to day: approve plans, money requests and introductions; organize trips; manage lists; see balances; share your ETA; edit each person's permissions and all settings. |
+| **Your AI assistant** (MCP, 37 tools) | Just ask: "plan dinner with Sam Friday", "add charcoal to the BBQ list", "what do I owe Priya?". Money, location and approvals always wait for your OK. |
 | **CLI** (`confer ...`, `--json` for scripts) | Setup, automation and power use. |
 
 **Permissions are per person.** Each contact gets grants you choose:
-`plans`, `autoconfirm`, `files`, `notes`, `intros`, `lists`, `money` and
-`location`. Everything except `autoconfirm` and `location` is on by default.
-Change them in the phone app or with `confer grant Sam +location -money`.
+`plans`, `autoconfirm`, `files`, `notes`, `intros`, `lists`, `money`, `trips`
+and `location`. Everything except `autoconfirm` and `location` is on by default.
+Change them in the phone app or with `confer grant Sam +location,-money`.
 
 **Settings** live in `~/.confer/config.json`. Edit them in the phone app's
 Settings tab or with `confer config <key> <value>`:
 - `name`, `endpoint`, `relay`, `tz`;
 - working hours (`hours_start`, `hours_end`) and `buffer_minutes`;
 - `calendar`: an .ics URL;
-- `tentative_holds`, `currency`, `pay_link`, `notify_webhook`,
+- `tentative_holds`, `trips_block_calendar`, `currency`, `pay_link`,
   `nudge_after_hours`.
 
-For safety, `notify_cmd` can only be set from the CLI, because it runs a
-program.
+For safety, some settings can only be set from the CLI:
+- `notify_cmd`, because it runs a program;
+- `notify_webhook`, because it receives every inbox event;
+- a local `.ics` or `.json` calendar path.
+
+Remote calendar URLs must be `https://` or `webcal://` and point to a public
+address.
 
 ## Quick start
 
@@ -156,7 +176,7 @@ More: `confer grant Sam +autoconfirm`, `confer note Sam "Thai or Italian?"`,
 
 ## Use it from any agent or harness
 
-One tool catalog (36 tools) is exposed four ways:
+One tool catalog (37 tools) is exposed four ways:
 - **MCP:** `confer mcp`, over stdio or `--http`.
 - **REST API:** `confer api enable`, then `POST /api/v1/tools/<name>`, with an OpenAPI spec.
 - **Function-calling schemas:** `confer tools export --format openai|anthropic|gemini`.
@@ -175,12 +195,12 @@ One tool catalog (36 tools) is exposed four ways:
 { "mcpServers": { "confer": { "command": "confer", "args": ["mcp"] } } }
 ```
 
-Your agent gets 28 tools. They cover plans (`confer_propose_plan`,
+Your agent gets 37 tools. They cover plans (`confer_propose_plan`,
 `confer_respond`), lists (`confer_create_list`, `confer_list_edit`), money
 (`confer_split_expense`, `confer_balances`), status (`confer_share_status`),
 notes, files, introductions, and the inbox. Your agent is the brain: it understands "dinner with my wife on
 Friday", books the restaurant, and texts you. Confer is the trusted pipe to
-other people's agents. See [examples/](examples/) for Claude Code and Hermes
+other people's agents. See [integrations/](integrations/) for Claude Code, Hermes and more
 config.
 
 ## How it works
@@ -221,7 +241,7 @@ Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md). Threat model:
 
 ## Status
 
-v0.3: the protocol and reference implementation are complete and tested (the
+v0.4: the protocol and reference implementation are complete and tested (the
 end-to-end tests run real nodes over HTTP, with relays, retries, forged
 messages, introductions and key rotation). CI runs on Python 3.11–3.13. Not
 yet done: multi-device, CalDAV write-back, push instead of relay polling, and

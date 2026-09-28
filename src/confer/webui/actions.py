@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .. import settings as remote_settings
 from ..node import MAX_FILE_BYTES, NodeError, _safe_name, check_url
 
 if TYPE_CHECKING:
@@ -385,15 +386,22 @@ def _save_settings(node: "Node", f: Form) -> None:
         raise UIError("your available hours must end after they start")
     new["buffer_minutes"] = f.int("buffer_minutes", "the buffer", lo=0, hi=240, default=0)
     cal = f.get("calendar")
-    # a local path already configured with the CLI may be kept, never set or changed from here
-    new["calendar"] = cal if cal and cal == cfg.get("calendar") else _calendar_url(cal)
+    # a value already configured with the CLI (e.g. a local path) may be kept; anything new goes
+    # through the shared remote-safe rules (https only, public address — no SSRF)
+    if cal and cal == cfg.get("calendar"):
+        new["calendar"] = cal
+    else:
+        _calendar_url(cal)
+        try:
+            new["calendar"] = remote_settings.validate("calendar", cal, remote=True)
+        except remote_settings.SettingsError as exc:
+            raise UIError(str(exc)) from None
     new["tentative_holds"] = f.flag("tentative_holds")
     ccy = f.get("currency", "USD").upper()
     if not re.fullmatch(r"[A-Z]{3}", ccy):
         raise UIError("currency must be a 3-letter code like USD")
     new["currency"] = ccy
     new["pay_link"] = _url_or_empty(f.get("pay_link"), "the pay link", https_only=True)
-    new["notify_webhook"] = _url_or_empty(f.get("notify_webhook"), "the webhook")
     nudge = f.get("nudge_after_hours") or "24"
     try:
         hours = float(nudge)
@@ -402,7 +410,7 @@ def _save_settings(node: "Node", f: Form) -> None:
     if not 1 <= hours <= 720:
         raise UIError("reminder hours must be between 1 and 720")
     new["nudge_after_hours"] = int(hours) if hours.is_integer() else hours
-    cfg.update(new)  # note: notify_cmd is deliberately not editable from the web
+    cfg.update(new)  # note: notify_cmd and notify_webhook are deliberately CLI-only
     node.save_config()
 
 

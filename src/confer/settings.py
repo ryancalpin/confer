@@ -12,10 +12,12 @@ if TYPE_CHECKING:
     from .node import Node
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-CLI_ONLY = ("notify_cmd",)  # runs a program; a leaked token must not become code execution
+# notify_cmd runs a program; notify_webhook sends every inbox event somewhere. A leaked
+# API token must not turn into code execution or a permanent eavesdropping channel.
+CLI_ONLY = ("notify_cmd", "notify_webhook")
 SECRET = ("feed_token", "ui_token", "api_token")
 EDITABLE = ("name", "endpoint", "relay", "tz", "hours_start", "hours_end", "buffer_minutes", "calendar", "tentative_holds",
-            "trips_block_calendar", "currency", "pay_link", "notify_webhook", "nudge_after_hours")
+            "trips_block_calendar", "currency", "pay_link", "nudge_after_hours")
 
 
 class SettingsError(ValueError):
@@ -25,7 +27,27 @@ class SettingsError(ValueError):
 def public_view(node: "Node") -> dict[str, Any]:
     cfg = {k: node.config.get(k) for k in EDITABLE}
     cfg["notify_cmd_set"] = bool(node.config.get("notify_cmd"))
+    cfg["notify_webhook_set"] = bool(node.config.get("notify_webhook"))
     return cfg
+
+
+def _public_host(url: str, what: str) -> None:
+    """Refuse URLs that resolve to loopback, private, link-local (cloud metadata) or
+    otherwise non-public addresses — a remote caller must not aim the node's own
+    fetches at its network (SSRF)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname or ""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:
+        raise SettingsError(f"{what}: can't resolve {host!r}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not ip.is_global:
+            raise SettingsError(f"{what} must point to a public internet address")
 
 
 def _url(value: Any, what: str, *, query: bool, https: bool = False) -> str:
@@ -65,14 +87,16 @@ def validate(key: str, value: Any, *, remote: bool = True) -> Any:
         if not v:
             return ""
         s = str(v)
-        if s.startswith("webcal://"):
-            s = "https://" + s[len("webcal://"):]
-            _url(s, key, query=True)
-            return str(v)
-        if s.startswith(("http://", "https://")):
-            return _url(s, key, query=True)
+        fetch = "https://" + s[len("webcal://"):] if s.startswith("webcal://") else s
+        if fetch.startswith(("http://", "https://")):
+            _url(fetch, key, query=True)
+            if remote:  # the secret iCal URL must not travel in cleartext, nor point inward
+                if not fetch.startswith("https://"):
+                    raise SettingsError("calendar must be an https:// or webcal:// URL")
+                _public_host(fetch, "calendar")
+            return s
         if remote:
-            raise SettingsError("calendar must be an http(s):// or webcal:// URL (local files only via the CLI)")
+            raise SettingsError("calendar must be an https:// or webcal:// URL (local files only via the CLI)")
         return s
     if key == "tz":
         try:
@@ -116,12 +140,12 @@ def validate(key: str, value: Any, *, remote: bool = True) -> Any:
 
 def update(node: "Node", changes: dict[str, Any], *, remote: bool = True) -> dict[str, Any]:
     """Validate every change first, then apply all of them (all-or-nothing)."""
-    if node.config.get("hours_start") and ("hours_start" in changes or "hours_end" in changes):
-        start = changes.get("hours_start", node.config.get("hours_start"))
-        end = changes.get("hours_end", node.config.get("hours_end"))
-        if isinstance(start, str) and isinstance(end, str) and _HHMM.match(start) and _HHMM.match(end) and end <= start:
-            raise SettingsError("hours_end must be after hours_start")
     cleaned = {k: validate(k, v, remote=remote) for k, v in changes.items()}
+    if "hours_start" in cleaned or "hours_end" in cleaned:  # compare the *cleaned* values
+        start = cleaned.get("hours_start", node.config.get("hours_start", "08:00"))
+        end = cleaned.get("hours_end", node.config.get("hours_end", "22:00"))
+        if end <= start:
+            raise SettingsError("hours_end must be after hours_start")
     node.config.update(cleaned)
     node.save_config()
     return public_view(node)
