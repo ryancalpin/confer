@@ -44,6 +44,7 @@ final class AppModel: ObservableObject {
     @Published var contacts: [Contact] = []
     @Published var presence: [Presence] = []
     @Published var banner: String?
+    @Published var loaded = false  // first refresh finished — before that, show progress instead of empty states
 
     @AppStorage("nodeURL") private var nodeURL = ""
     @AppStorage("lastEventId") private var lastEventId = 0
@@ -54,6 +55,14 @@ final class AppModel: ObservableObject {
     var moneyWaiting: Int { ledger.filter(\.needsMyAnswer).count }
 
     init() {
+        #if DEBUG
+        // Simulator/UI testing: `-ConferDemoURL http://127.0.0.1:3067 -ConferDemoToken …` (DEBUG builds only)
+        let d = UserDefaults.standard
+        if let u = d.string(forKey: "ConferDemoURL"), let t = d.string(forKey: "ConferDemoToken"), let url = URL(string: u) {
+            api = APIClient(baseURL: url, token: t)
+            return
+        }
+        #endif
         if let url = URL(string: nodeURL), !nodeURL.isEmpty, let token = Keychain.load("apiToken") {
             api = APIClient(baseURL: url, token: token)
         }
@@ -91,22 +100,25 @@ final class AppModel: ObservableObject {
 
     // MARK: loading
 
+    /// Load every section independently so the screen fills in as data arrives,
+    /// and one failing section can't blank the others.
     func refreshAll() async {
         guard let api else { return }
-        do {
-            async let who = api.call("confer_whoami", as: WhoAmI.self)
-            async let i = api.call("confer_inbox", as: [InboxItem].self)
-            async let p = api.call("confer_plans", as: [Plan].self)
-            async let t = api.call("confer_trips", as: [Trip].self)
-            async let l = api.call("confer_lists", as: [SharedList].self)
-            async let b = api.call("confer_balances", as: [Balance].self)
-            async let g = api.call("confer_ledger", as: [LedgerEntry].self)
-            async let c = api.call("confer_contacts", as: [Contact].self)
-            async let pr = api.call("confer_presence", as: [Presence].self)
-            (me, inbox, plans, trips, lists, balances, ledger, contacts, presence) = try await (who, i, p, t, l, b, g, c, pr)
-        } catch {
-            banner = error.localizedDescription
+        func load<T: Decodable>(_ tool: String, _ type: T.Type, _ assign: @escaping @MainActor (T) -> Void) async {
+            do { assign(try await api.call(tool, as: T.self)) } catch { banner = error.localizedDescription }
         }
+        await withTaskGroup(of: Void.self) { g in
+            g.addTask { await load("confer_inbox", [InboxItem].self) { self.inbox = $0 } }
+            g.addTask { await load("confer_presence", [Presence].self) { self.presence = $0 } }
+            g.addTask { await load("confer_plans", [Plan].self) { self.plans = $0 } }
+            g.addTask { await load("confer_ledger", [LedgerEntry].self) { self.ledger = $0 } }
+            g.addTask { await load("confer_trips", [Trip].self) { self.trips = $0 } }
+            g.addTask { await load("confer_lists", [SharedList].self) { self.lists = $0 } }
+            g.addTask { await load("confer_balances", [Balance].self) { self.balances = $0 } }
+            g.addTask { await load("confer_contacts", [Contact].self) { self.contacts = $0 } }
+            g.addTask { await load("confer_whoami", WhoAmI.self) { self.me = $0 } }
+        }
+        loaded = true
     }
 
     /// Run an action, show errors, then refresh. Returns true on success.
@@ -155,14 +167,25 @@ final class AppModel: ObservableObject {
     }
 
     func requestNotificationPermission() {
+        #if DEBUG
+        if UserDefaults.standard.string(forKey: "ConferDemoURL") != nil { return }  // demo/screenshot runs
+        #endif
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in }
     }
 
     private func notify(_ item: InboxItem) {
-        let content = UNMutableNotificationContent()
-        content.title = "Confer"
-        content.body = Fmt.summary(item.summary)
-        content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "inbox-\(item.id)", content: content, trigger: nil))
+        #if DEBUG
+        if UserDefaults.standard.string(forKey: "ConferDemoURL") != nil { return }
+        #endif
+        let summary = Fmt.summary(item.summary), id = item.id
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Confer"
+            content.body = summary
+            content.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "inbox-\(id)", content: content, trigger: nil))
+        }
     }
+
 }

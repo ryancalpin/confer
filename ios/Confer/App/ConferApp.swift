@@ -67,23 +67,22 @@ struct RootView: View {
 
 struct MainTabs: View {
     @EnvironmentObject var model: AppModel
+    @State private var tab = UserDefaults.standard.string(forKey: "ConferTab") ?? "inbox"  // launch arg for screenshots
 
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             NavigationStack { InboxView() }
                 .tabItem { Label("Inbox", systemImage: "tray") }
-                .badge(model.actionableCount)
+                .badge(model.actionableCount).tag("inbox")
             NavigationStack { PlansView() }
-                .tabItem { Label("Plans", systemImage: "calendar") }
+                .tabItem { Label("Plans", systemImage: "calendar") }.tag("plans")
             NavigationStack { TripsView() }
-                .tabItem { Label("Trips", systemImage: "suitcase") }
+                .tabItem { Label("Trips", systemImage: "suitcase") }.tag("trips")
             NavigationStack { ListsView() }
-                .tabItem { Label("Lists", systemImage: "checklist") }
+                .tabItem { Label("Lists", systemImage: "checklist") }.tag("lists")
             NavigationStack { MoneyView() }
                 .tabItem { Label("Money", systemImage: "dollarsign.circle") }
-                .badge(model.moneyWaiting)
-            NavigationStack { PeopleView() }
-                .tabItem { Label("People", systemImage: "person.2") }
+                .badge(model.moneyWaiting).tag("money")
         }
     }
 }

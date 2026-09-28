@@ -3,6 +3,7 @@ import SwiftUI
 struct InboxView: View {
     @EnvironmentObject var model: AppModel
     @State private var showStatus = false
+    @State private var showPeople = UserDefaults.standard.bool(forKey: "ConferShowPeople")
 
     private var open: [InboxItem] { model.inbox.filter { $0.status == "open" } }
 
@@ -35,7 +36,7 @@ struct InboxView: View {
             let rest = open.filter { !$0.actionable }
             Section(actionable.isEmpty ? "Inbox" : "Updates") {
                 if rest.isEmpty && actionable.isEmpty {
-                    Text("You're all caught up.").foregroundStyle(.secondary)
+                    if model.loaded { Text("You're all caught up.").foregroundStyle(.secondary) } else { ProgressView() }
                 }
                 ForEach(rest) { item in row(item) }
             }
@@ -43,11 +44,15 @@ struct InboxView: View {
         .navigationTitle("Inbox")
         .refreshable { await model.refreshAll() }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showPeople = true } label: { Label("People & settings", systemImage: "person.2.circle") }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showStatus = true } label: { Label("Share status", systemImage: "location.circle") }
             }
         }
         .sheet(isPresented: $showStatus) { ShareStatusView() }
+        .sheet(isPresented: $showPeople) { NavigationStack { PeopleView() }.environmentObject(model) }
     }
 
     @ViewBuilder
@@ -118,11 +123,12 @@ struct ShareStatusView: View {
                     }
                 }
                 Section("…or to people") { ContactPicker(selected: $people) }
-                Section {
-                    Button("Stop sharing with selected people", role: .destructive) {
-                        Task { if await model.act("confer_share_status_stop_placeholder") { dismiss() } }
+                if !people.isEmpty {
+                    Section {
+                        Button("Stop sharing with selected people", role: .destructive) {
+                            Task { if await model.act("confer_stop_sharing", ["to_contacts": Array(people)]) { dismiss() } }
+                        }
                     }
-                    .hidden()
                 }
             }
             .navigationTitle("Share status")

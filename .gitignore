@@ -10,3 +10,6 @@ build/
 identity.key
 state.db*
 .claude/
+ios/Confer.xcodeproj/
+ios/tools/.demo/
+ios/DD/

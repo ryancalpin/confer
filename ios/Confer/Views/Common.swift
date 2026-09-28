@@ -19,11 +19,13 @@ struct OnboardingView: View {
                     }
                     .padding(.vertical, 8)
                 }
-                Section("Your node") {
+                Section {
                     TextField("https://you.your-tailnet.ts.net", text: $url)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     SecureField("API token", text: $token)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
+                } header: {
+                    Text("Your node")
                 } footer: {
                     Text("On the machine running Confer: `confer api enable` shows the URL and token. Use HTTPS (e.g. `tailscale serve`).")
                 }

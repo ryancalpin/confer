@@ -23,7 +23,8 @@ final class APIClient {
         self.token = token
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 20
-        cfg.httpAdditionalHeaders = ["User-Agent": "Confer-iOS/0.4"]
+        cfg.httpMaximumConnectionsPerHost = 10  // the app loads ~9 sections at once
+        cfg.httpAdditionalHeaders = ["User-Agent": "Confer-iOS/0.5"]
         session = URLSession(configuration: cfg)
     }
 

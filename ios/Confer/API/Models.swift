@@ -261,7 +261,7 @@ enum Fmt {
 
     /// Hide the CLI hints the node appends to inbox summaries ("… Reply: confer plan respond …").
     static func summary(_ s: String) -> String {
-        for marker in [" Reply: confer ", " confer money accept", " confer intro accept", " Revise it: confer", " Join anyway: confer",
+        for marker in [". Options: ", " Reply: confer ", " confer money accept", " confer intro accept", " Revise it: confer", " Join anyway: confer",
                        " Confirm: confer", " (reply: confer", " confer list show", " confer plan respond", " — confer "] {
             if let r = s.range(of: marker) { return String(s[..<r.lowerBound]).trimmingCharacters(in: .whitespaces) }
         }

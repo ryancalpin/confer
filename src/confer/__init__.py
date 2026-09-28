@@ -1,6 +1,6 @@
 """Confer — open agent-to-agent coordination for personal AI assistants."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .node import Node, NodeError  # noqa: E402
 
