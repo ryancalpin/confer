@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .node import Node
 
 MAX_CENTS = 10_000_000_00  # 10 million in major units — plenty for dinners and trips
+MAX_PENDING_PER_CONTACT = 100  # unanswered requests one contact may have waiting on me
 _CCY = re.compile(r"^[A-Z]{3}$")
 
 
@@ -150,6 +151,9 @@ class MoneyMixin:
         return entry
 
     def cancel_entry(self: "Node", entry_id: str) -> dict:
+        """Withdraw an entry you created. Allowed even after acceptance: cancelling
+        only ever gives up money owed *to you* (or a payment *you* made), so it
+        can't be used against the other side."""
         from .node import NodeError
 
         entry = self.store.find_entry(entry_id)
@@ -200,6 +204,9 @@ class MoneyMixin:
             if prior["contact"] != contact.agent_id:
                 raise Rejected("entry id collision")
             return None  # retry of something already recorded
+        open_from_them = sum(1 for e in self.store.entries(contact.agent_id) if e["payer"] == "them" and e["status"] == "pending")
+        if open_from_them >= MAX_PENDING_PER_CONTACT:
+            raise Rejected("too many unanswered requests from you")
         cents = body.get("share_cents" if kind == "expense" else "cents")
         if not isinstance(cents, int) or isinstance(cents, bool) or not 0 < cents <= MAX_CENTS:
             raise Rejected("bad amount")
@@ -213,7 +220,8 @@ class MoneyMixin:
             "title": str(body.get("title", "Payment" if kind == "settle" else "Expense"))[:120], "currency": ccy, "cents": cents,
             "total_cents": total if isinstance(total, int) and cents <= total <= MAX_CENTS else cents,
             "note": str(body.get("note", ""))[:500], "plan_id": str(body.get("plan_id", ""))[:64],
-            "pay_link": _clean_url(body.get("pay_link")) if kind == "expense" else "", "created_at": self.now(),
+            "pay_link": link if kind == "expense" and (link := _clean_url(body.get("pay_link"))).startswith("https://") else "",
+            "created_at": self.now(),
         }
 
     def _on_expense(self: "Node", contact: Contact, body: dict) -> None:
@@ -242,7 +250,8 @@ class MoneyMixin:
         if not entry or entry["contact"] != contact.agent_id or entry["payer"] != "me":
             raise Rejected("unknown entry")
         status = body.get("status")
-        if status not in ("accepted", "disputed") or entry["status"] == "cancelled":
+        # accepted is final: a counterparty can't later flip an agreed entry to disputed
+        if status not in ("accepted", "disputed") or entry["status"] in ("cancelled", "accepted"):
             return
         entry["status"] = status
         self.store.save_entry(entry)

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 MAX_ITEMS = 300
 MAX_MEMBERS = 50
 MAX_TEXT = 200
+MAX_LISTS_PER_OWNER = 100  # lists one contact may share with me
 OPS = ("add", "check", "uncheck", "remove", "claim", "unclaim", "leave")
 
 
@@ -132,7 +133,7 @@ class ListsMixin:
         return lst
 
     def lists(self: "Node") -> list[dict]:
-        return self.store.all_lists()
+        return [x for x in self.store.all_lists() if not x.get("leaving")]
 
     def list_op(self: "Node", list_id: str, op: str, *, item: str | int | None = None, text: str = "") -> dict:
         """Edit a list. ``item`` is an item id or a 1-based position. Owners apply
@@ -158,8 +159,9 @@ class ListsMixin:
                 if not owner:
                     raise NodeError("the list owner is no longer a contact")
                 self._send(owner, "list.op", {"list_id": lst["id"], "op": op, "item_id": item_id, "text": text[:MAX_TEXT]}, kick=False)
-                if op == "leave":
-                    self.store.delete_list(lst["id"])
+                if op == "leave":  # hidden now; removed for good when the owner confirms (list.close)
+                    lst["leaving"] = True
+                    self.store.save_list(lst)
         self.kick()
         return lst
 
@@ -213,14 +215,21 @@ class ListsMixin:
             data = validate_wire_list(body.get("list"), contact.agent_id)
         except ListError as exc:
             raise Rejected(str(exc)) from exc
-        if self.identity.agent_id not in data["members"]:
-            return  # I was removed / left
+        if self.identity.agent_id not in data["members"]:  # I was removed / my leave went through
+            mine = self.store.get_list(data["id"])
+            if mine and mine.get("role") == "member" and mine.get("owner") == contact.agent_id:
+                self.store.delete_list(data["id"])
+            return
         with self.store.transaction():
             existing = self.store.get_list(data["id"])
             if existing and (existing.get("owner") != contact.agent_id or existing.get("role") == "owner"):
                 raise Rejected("list id collision")
             if existing and existing["rev"] >= data["rev"]:
                 return
+            if existing and existing.get("leaving"):
+                return  # I asked to leave; wait for the owner to drop me
+            if not existing and sum(1 for x in self.store.all_lists() if x.get("owner") == contact.agent_id) >= MAX_LISTS_PER_OWNER:
+                raise Rejected("too many shared lists from you")
             self.store.save_list({**data, "role": "member"})
         if not existing:
             self._inbox("list", f"📝 {contact.name} shared the list {data['title']!r} with you ({len(data['items'])} items). "

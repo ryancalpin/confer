@@ -18,9 +18,11 @@ def test_shared_list_edits_flow_through_the_owner(net):
     assert items(sam, "list")
     sam.list_op(lst["id"], "add", text="charcoal")
     sam.list_op(lst["id"], "claim", item="buns")
-    wait_for(lambda: len(priya.store.get_list(lst["id"])["items"]) == 3, what="priya sees sam's add")
-    got = {i["text"]: i for i in priya.store.get_list(lst["id"])["items"]}
-    assert got["buns"]["claimed_name"] == "sam"
+    def priya_sees():
+        got = {i["text"]: i for i in priya.store.get_list(lst["id"])["items"]}
+        return "charcoal" in got and got["buns"]["claimed_name"] == "sam"
+
+    wait_for(priya_sees, what="priya sees sam's add and claim")
     with pytest.raises(NodeError):  # already claimed by sam
         alex.list_op(lst["id"], "claim", item="buns")
     priya.list_op(lst["id"], "check", item=1)
@@ -112,3 +114,51 @@ def test_eta_and_location_are_opt_in_and_ephemeral(net):
     wait_for(lambda: sam.presence(), what="brb")
     sam.clock = lambda: alex.now() + 120
     assert sam.presence() == []
+
+
+def test_accepted_entries_are_final_and_floods_are_capped(net):
+    from confer import money as M
+
+    alex, sam = net.node("alex"), net.node("sam")
+    net.pair(alex, sam)
+    e = alex.add_expense("Dinner", "40", ["sam"])[0]
+    wait_for(lambda: sam.ledger(), what="request")
+    sam.answer_entry(e["id"], accept=True)
+    wait_for(lambda: alex.store.entry(e["id"])["status"] == "accepted", what="accepted")
+    # a raw "disputed" after acceptance is ignored
+    sam._send(sam.store.contact(alex.identity.agent_id), "money.ack", {"entry_id": e["id"], "status": "disputed"})
+    wait_for(lambda: not sam.store.outbox(), what="delivered")
+    assert alex.store.entry(e["id"])["status"] == "accepted"
+    # http pay links are dropped
+    alex.config["pay_link"] = "http://phish.example/pay"
+    alex.add_expense("Taxi", "10", ["sam"])
+    wait_for(lambda: len(sam.ledger()) == 2, what="second request")
+    assert sam.ledger()[1]["pay_link"] == ""
+    # unanswered requests are capped per contact
+    c = alex.store.contact(sam.identity.agent_id)
+    for i in range(M.MAX_PENDING_PER_CONTACT + 1):
+        alex._send(c, "money.expense", {"entry_id": f"flood{i:05d}", "currency": "USD", "share_cents": 1, "title": "x"}, kick=False)
+    alex.kick()
+    wait_for(lambda: items(alex, "delivery.failed"), what="flood refused", timeout=30)
+    assert sum(1 for x in sam.ledger() if x["status"] == "pending") == M.MAX_PENDING_PER_CONTACT
+
+
+def test_leaving_a_list_waits_for_the_owner(net):
+    alex, sam = net.node("alex"), net.node("sam")
+    net.pair(alex, sam)
+    lst = alex.create_list("Trip", ["sam"])
+    wait_for(lambda: sam.store.get_list(lst["id"]), what="shared")
+    sam.list_op(lst["id"], "leave")
+    assert sam.lists() == []  # hidden immediately
+    wait_for(lambda: sam.store.get_list(lst["id"]) is None, what="removed once the owner confirms")
+    assert sam.identity.agent_id not in alex.get_list(lst["id"])["members"]
+
+
+def test_rotation_does_not_rewrite_free_text(tmp_path):
+    from confer.store import Store
+
+    st = Store(tmp_path / "s.db")
+    st.save_plan({"id": "p1", "organizer": "OLD", "participants": {"OLD": {"name": "x"}}, "notes": "my id is OLD, ask me"})
+    st.rename_agent("OLD", "NEW")
+    p = st.plan("p1")
+    assert p["organizer"] == "NEW" and "NEW" in p["participants"] and p["notes"] == "my id is OLD, ask me"

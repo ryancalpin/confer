@@ -347,9 +347,7 @@ class Store:
 
     # key rotation ----------------------------------------------------------
     def rename_agent(self, old: str, new: str) -> None:
-        """A contact (or this node) moved to a new key: re-point every local record.
-        Agent ids are 43-char base64url public keys, so a textual swap inside plan
-        JSON can't hit anything else."""
+        """A contact (or this node) moved to a new key: re-point every local record."""
         with self._lock:
             self._db.execute("UPDATE contacts SET agent_id=? WHERE agent_id=?", (new, old))
             self._db.execute("UPDATE outbox SET to_id=? WHERE to_id=?", (new, old))
@@ -360,9 +358,9 @@ class Store:
             self._db.execute("UPDATE presence SET contact=? WHERE contact=?", (new, old))
             for table in ("lists", "ledger"):
                 for r in self._db.execute(f"SELECT id, data FROM {table} WHERE instr(data, ?) > 0", (old,)).fetchall():  # noqa: S608
-                    self._db.execute(f"UPDATE {table} SET data=? WHERE id=?", (r["data"].replace(old, new), r["id"]))  # noqa: S608
+                    self._db.execute(f"UPDATE {table} SET data=? WHERE id=?", (_swap_json(r["data"], old, new), r["id"]))  # noqa: S608
             for r in self._db.execute("SELECT id, data FROM plans WHERE instr(data, ?) > 0", (old,)).fetchall():
-                self._db.execute("UPDATE plans SET data=? WHERE id=?", (r["data"].replace(old, new), r["id"]))
+                self._db.execute("UPDATE plans SET data=? WHERE id=?", (_swap_json(r["data"], old, new), r["id"]))
 
     # relay mailbox ---------------------------------------------------------
     def mailbox_put(self, env: dict, now: float, per_recipient_cap: int) -> bool:
@@ -388,6 +386,20 @@ class Store:
 
     def mailbox_expire(self, before: float) -> int:
         return self._x("DELETE FROM mailbox WHERE stored_at<?", (before,)).rowcount
+
+
+def _swap_json(data: str, old: str, new: str) -> str:
+    """Replace an agent id where it *is* a value or key — never inside free text
+    (a note could legitimately quote someone's id)."""
+
+    def walk(o: Any) -> Any:
+        if isinstance(o, dict):
+            return {(new if k == old else k): walk(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        return new if o == old else o
+
+    return json.dumps(walk(json.loads(data)))
 
 
 class _Tx:
