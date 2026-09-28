@@ -117,6 +117,15 @@ nav.tabs .count {
   background: var(--danger); color: #fff; font-size: .7rem; font-weight: 700; line-height: 18px; text-align: center;
 }
 .sep { border: 0; border-top: 1px solid var(--border); }
+.day-group { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 4px 4px; font-weight: 600; }
+a.card-link { display: block; text-decoration: none; color: inherit; }
+.pill.planning { background: var(--accent-soft); color: var(--accent); }
+.pill.booked { background: var(--ok-soft); color: var(--ok); }
+.pill.cancelled { background: var(--danger-soft); color: var(--danger); }
+.pill.owner { background: var(--accent-soft); color: var(--accent); }
+.pill.member { background: var(--field); color: var(--muted); }
+.pill.pickup { background: var(--warn-soft); color: var(--warn); }
+.mine { font-weight: 600; }
 """
 
 # One small script, loaded with the CSP nonce. Only three behaviours:
@@ -173,4 +182,6 @@ ICONS = {
               '<path d="M16 4.8a3.3 3.3 0 010 6.4M18 14.8c1.8.8 3 2.5 3.5 5.2"/>',
     "settings": '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M4.2 5.8l2.1 2.1M17.7 16.1l2.1 2.1'
                 'M2.5 12h3M18.5 12h3M4.2 18.2l2.1-2.1M17.7 7.9l2.1-2.1"/>',
+    "trips": '<path d="M9 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V9"/>'
+             '<path d="M9 3v6h6M9 9l9-9M12 17v-4M8 17v-2M16 17v-6"/>',
 }

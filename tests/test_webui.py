@@ -258,7 +258,7 @@ def saved_config(node) -> dict:
     return json.loads((node.home / "config.json").read_text())
 
 
-@pytest.mark.parametrize("tab", ["inbox", "plans", "lists", "money", "people", "settings"])
+@pytest.mark.parametrize("tab", ["inbox", "plans", "lists", "money", "people", "trips", "settings"])
 def test_every_tab_renders(net, tab):
     alice, bob = net.node("alice"), net.node("bob")
     net.pair(alice, bob)
@@ -574,3 +574,250 @@ def test_xss_in_list_items_and_notes_is_escaped(net):
         page = get_tab(bob, tab)
         assert "<script>alert" not in page and "<img src=x" not in page
         assert "&lt;script&gt;alert" in page
+
+
+# --------------------------------------------------------------------------- trips tests
+
+
+def get_trip_tab(node, trip_id=None, token=None) -> str:
+    tok = token if token is not None else ui_token(node)
+    qs = f"?tab=trips&trip={urllib.parse.quote(trip_id)}" if trip_id else "?tab=trips"
+    return urllib.request.urlopen(f"{base_url(node)}/ui/{tok}{qs}").read().decode()
+
+
+def test_trips_tab_renders(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    page = get_tab(alice, "trips")
+    assert "Trips" in page and "New trip" in page and 'tab=trips" aria-current="page"' in page
+
+
+def test_create_trip_via_ui_reaches_member(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Beach Weekend"),
+                      ("trip_destination", "Malibu"),
+                      ("trip_start_date", "2031-07-01"),
+                      ("trip_end_date", "2031-07-03"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip = wait_for(lambda: bob.trips(), what="trip at bob")[0]
+    assert trip["title"] == "Beach Weekend" and trip["destination"] == "Malibu"
+    page = get_trip_tab(bob, trip["id"])
+    assert "Beach Weekend" in page and "Malibu" in page
+
+
+def test_itinerary_add_via_ui_appears_at_member(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Ski Trip"),
+                      ("trip_start_date", "2031-12-20"),
+                      ("trip_end_date", "2031-12-27"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip = wait_for(lambda: alice.trips(), what="trip at alice")[0]
+    act(alice, action="trip_op", trip_id=trip["id"], trip_op="itinerary.add",
+        kind="flight", itin_title="UA 123", itin_start="", itin_end="",
+        itin_location="SFO", itin_confirmation="ABC123", itin_details="",
+        itin_url="")
+    wait_for(lambda: bob.trips() and bob.trips()[0]["itinerary"], what="itinerary at bob")
+    page = get_trip_tab(bob, bob.trips()[0]["id"])
+    assert "UA 123" in page and "SFO" in page
+
+
+def test_member_sets_arrival_via_ui_reaches_owner(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Road Trip"),
+                      ("trip_start_date", "2031-08-10"),
+                      ("trip_end_date", "2031-08-15"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip_id = wait_for(lambda: bob.trips() and bob.trips()[0]["id"], what="trip at bob")
+    act(bob, action="trip_op", trip_id=trip_id, trip_op="traveler.set",
+        arr_when="", arr_how="Flight AA 900", arr_where="LAX",
+        arr_pickup="1", dep_when="", dep_how="", dep_where="",
+        travel_notes="Please pick me up")
+    wait_for(lambda: alice.get_trip(trip_id)["travelers"].get(bob.identity.agent_id), what="arrival at owner")
+    tv = alice.get_trip(trip_id)["travelers"][bob.identity.agent_id]
+    assert tv["arrive"]["how"] == "Flight AA 900" and tv["arrive"]["needs_pickup"]
+    assert tv["notes"] == "Please pick me up"
+    page = get_trip_tab(alice, trip_id)
+    assert "Flight AA 900" in page
+
+
+def test_ride_offer_and_join_via_ui(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Weekend Getaway"),
+                      ("trip_start_date", "2031-09-05"),
+                      ("trip_end_date", "2031-09-07"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip_id = wait_for(lambda: alice.trips() and alice.trips()[0]["id"], what="trip at alice")
+    wait_for(lambda: bob.trips(), what="trip at bob")
+    act(alice, action="trip_op", trip_id=trip_id, trip_op="ride.offer",
+        ride_seats="3", ride_from="San Francisco", ride_leaves_at="")
+    wait_for(lambda: bob.trips() and bob.trips()[0]["rides"], what="ride at bob")
+    ride_id = bob.trips()[0]["rides"][0]["id"]
+    act(bob, action="trip_op", trip_id=trip_id, trip_op="ride.join", trip_item_id=ride_id)
+    wait_for(lambda: bob.identity.agent_id in alice.get_trip(trip_id)["rides"][0]["passengers"],
+             what="bob in ride")
+    page = get_trip_tab(alice, trip_id)
+    assert "San Francisco" in page
+
+
+def test_room_join_via_ui(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Cabin Weekend"),
+                      ("trip_start_date", "2031-10-01"),
+                      ("trip_end_date", "2031-10-03"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip_id = wait_for(lambda: alice.trips() and alice.trips()[0]["id"], what="trip at alice")
+    wait_for(lambda: bob.trips(), what="trip at bob")
+    act(alice, action="trip_op", trip_id=trip_id, trip_op="room.add",
+        room_name="Master", room_beds="2")
+    wait_for(lambda: alice.get_trip(trip_id)["rooms"], what="room at owner")
+    room_id = alice.get_trip(trip_id)["rooms"][0]["id"]
+    wait_for(lambda: bob.trips() and bob.trips()[0]["rooms"], what="room at bob")
+    act(bob, action="trip_op", trip_id=trip_id, trip_op="room.join", trip_item_id=room_id)
+    wait_for(lambda: bob.identity.agent_id in alice.get_trip(trip_id)["rooms"][0]["occupants"],
+             what="bob in room")
+    page = get_trip_tab(alice, trip_id)
+    assert "Master" in page
+
+
+def test_task_add_and_done_via_ui(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Conference"),
+                      ("trip_start_date", "2031-11-10"),
+                      ("trip_end_date", "2031-11-12"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip_id = wait_for(lambda: alice.trips() and alice.trips()[0]["id"], what="trip at alice")
+    wait_for(lambda: bob.trips(), what="trip at bob")
+    act(alice, action="trip_op", trip_id=trip_id, trip_op="task.add",
+        task_text="Book hotel", task_assignee="", task_due="")
+    wait_for(lambda: alice.get_trip(trip_id)["tasks"], what="task added")
+    task_id = alice.get_trip(trip_id)["tasks"][0]["id"]
+    page = get_trip_tab(alice, trip_id)
+    assert "Book hotel" in page
+    act(alice, action="trip_op", trip_id=trip_id, trip_op="task.done", trip_item_id=task_id)
+    assert alice.get_trip(trip_id)["tasks"][0]["done"]
+
+
+def test_poll_vote_via_ui(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Group Trip"),
+                      ("trip_start_date", "2031-06-01"),
+                      ("trip_end_date", "2031-06-05"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip_id = wait_for(lambda: alice.trips() and alice.trips()[0]["id"], what="trip at alice")
+    wait_for(lambda: bob.trips(), what="trip at bob")
+    act(alice, action="trip_op", trip_id=trip_id, trip_op="poll.add",
+        poll_question="Where to stay?", poll_options="Cabin\nHotel\nAirbnb")
+    wait_for(lambda: alice.get_trip(trip_id)["polls"], what="poll added")
+    wait_for(lambda: bob.trips() and bob.trips()[0]["polls"], what="poll at bob")
+    poll_id = bob.trips()[0]["polls"][0]["id"]
+    act(bob, action="trip_op", trip_id=trip_id, trip_op="poll.vote",
+        trip_item_id=poll_id, poll_option="o1")
+    wait_for(lambda: alice.get_trip(trip_id)["polls"][0]["votes"].get(bob.identity.agent_id) == "o1",
+             what="vote at owner")
+    page = get_trip_tab(bob, trip_id)
+    assert "Where to stay?" in page and "Hotel" in page
+
+
+def test_owner_update_form_hidden_for_members_and_rejected(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "Owner Test"),
+                      ("trip_start_date", "2031-04-01"),
+                      ("trip_end_date", "2031-04-05"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip_id = wait_for(lambda: alice.trips() and alice.trips()[0]["id"], what="trip at alice")
+    wait_for(lambda: bob.trips(), what="trip at bob")
+    # Owner should see edit form
+    alice_page = get_trip_tab(alice, trip_id)
+    assert "Edit trip details" in alice_page
+    # Member should NOT see edit form
+    bob_page = get_trip_tab(bob, trip_id)
+    assert "Edit trip details" not in bob_page
+    # Member's trip.update via POST should be rejected
+    page = act(bob, action="trip_op", trip_id=trip_id, trip_op="trip.update",
+               trip_title="Hacked", trip_destination="", trip_start_date="2031-04-01",
+               trip_end_date="2031-04-05", trip_notes="", trip_status="cancelled")
+    assert banner_error(page)
+
+
+def test_xss_in_trip_title_and_itinerary_title_is_escaped(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    evil_title = '<script>alert("trip")</script>'
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", evil_title),
+                      ("trip_start_date", "2031-05-01"),
+                      ("trip_end_date", "2031-05-03"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip = wait_for(lambda: alice.trips(), what="trip at alice")[0]
+    act(alice, action="trip_op", trip_id=trip["id"], trip_op="itinerary.add",
+        kind="other", itin_title=evil_title, itin_start="", itin_end="",
+        itin_location="", itin_confirmation="", itin_details="", itin_url="")
+    wait_for(lambda: alice.get_trip(trip["id"])["itinerary"], what="itinerary added")
+    # Check on both owner and member
+    wait_for(lambda: bob.trips(), what="trip at bob")
+    for node, trip_id in [(alice, trip["id"]), (bob, bob.trips()[0]["id"])]:
+        page = get_trip_tab(node, trip_id)
+        assert '<script>alert("trip")' not in page
+        assert "&lt;script&gt;alert" in page
+
+
+def test_non_https_itinerary_url_not_rendered_as_link(net):
+    alice, bob = net.node("alice"), net.node("bob")
+    net.pair(alice, bob)
+    act_multi(alice, [("action", "create_trip"), ("tab", "trips"),
+                      ("trip_title", "URL Test Trip"),
+                      ("trip_start_date", "2031-03-01"),
+                      ("trip_end_date", "2031-03-03"),
+                      ("contact", bob.identity.agent_id),
+                      ("packing_list", "1"),
+                      ("trip_notes", "")])
+    trip = wait_for(lambda: alice.trips(), what="trip at alice")[0]
+    # Add via CLI directly to bypass the https check in the form (testing that pages.py also enforces it)
+    alice.trip_op(trip["id"], "itinerary.add", kind="other", title="Hotel",
+                  start="", end="", location="", confirmation="", details="",
+                  url="http://insecure.example.com/booking")
+    wait_for(lambda: alice.get_trip(trip["id"])["itinerary"], what="itinerary added")
+    page = get_trip_tab(alice, trip["id"])
+    # The http:// URL must NOT be rendered as an <a href="http://..."> link
+    assert 'href="http://insecure.example.com' not in page
+    # But https would be ok — add a safe one via CLI
+    alice.trip_op(trip["id"], "itinerary.add", kind="flight", title="Flight",
+                  start="", end="", location="", confirmation="", details="",
+                  url="https://booking.example.com/safe")
+    wait_for(lambda: len(alice.get_trip(trip["id"])["itinerary"]) >= 2, what="second item")
+    page2 = get_trip_tab(alice, trip["id"])
+    assert 'href="https://booking.example.com/safe"' in page2

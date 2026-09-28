@@ -19,14 +19,15 @@ from zoneinfo import ZoneInfo
 from ..identity import fingerprint
 from ..money import fmt as fmt_money
 from ..node import DEFAULT_GRANTS, GRANTS
+from ..trips import KINDS, STATUSES
 from .assets import CSS, ICONS, JS
 
 if TYPE_CHECKING:
     from ..node import Node
     from ..store import Contact
 
-TABS = ("inbox", "plans", "lists", "money", "people", "settings")
-TAB_LABELS = {"inbox": "Inbox", "plans": "Plans", "lists": "Lists", "money": "Money", "people": "People", "settings": "Settings"}
+TABS = ("inbox", "plans", "lists", "money", "people", "trips", "settings")
+TAB_LABELS = {"inbox": "Inbox", "plans": "Plans", "lists": "Lists", "money": "Money", "people": "People", "trips": "Trips", "settings": "Settings"}
 OSM_PREFIX = "https://www.openstreetmap.org/"
 
 GRANT_HELP = {
@@ -714,7 +715,526 @@ def page_settings(ctx: Ctx) -> str:
     return "".join(out)
 
 
-PAGES = {"inbox": page_inbox, "plans": page_plans, "lists": page_lists, "money": page_money, "people": page_people, "settings": page_settings}
+# --------------------------------------------------------------------------- trips tab
+
+
+def _fmt_isodate(iso: str) -> str:
+    """Display an ISO UTC datetime string as a local date/time."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%b %d %H:%M")
+    except (ValueError, TypeError):
+        return iso
+
+
+def _fmt_tripdate(node: "Node", iso: str) -> str:
+    """Format a UTC ISO time string in the node's local timezone."""
+    if not iso:
+        return ""
+    try:
+        tz = ZoneInfo(node.tz)
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+        return dt.strftime("%b %d %H:%M")
+    except (ValueError, TypeError, Exception):
+        return iso
+
+
+def _fmt_tripday(node: "Node", iso: str) -> str:
+    """Format a UTC ISO time string as just the local date."""
+    if not iso:
+        return ""
+    try:
+        tz = ZoneInfo(node.tz)
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+        return dt.strftime("%Y-%m-%d")
+    except (ValueError, TypeError, Exception):
+        return ""
+
+
+def _trip_itinerary(ctx: Ctx, trip: dict) -> str:
+    """Render itinerary section, grouped by day."""
+    node = ctx.node
+    me = node.identity.agent_id
+    is_owner = trip.get("role") == "owner"
+    items = trip.get("itinerary", [])
+    out = [section("Itinerary")]
+    if items:
+        by_day: dict[str, list[dict]] = {}
+        no_date: list[dict] = []
+        for item in items:
+            day = _fmt_tripday(node, item.get("start", ""))
+            if day:
+                by_day.setdefault(day, []).append(item)
+            else:
+                no_date.append(item)
+        for day in sorted(by_day.keys()):
+            out.append(f'<div class="day-group">{e(day)}</div>')
+            for item in by_day[day]:
+                out.append(_itin_card(ctx, trip, item, is_owner, me))
+        for item in no_date:
+            out.append(_itin_card(ctx, trip, item, is_owner, me))
+    else:
+        out.append(empty("No itinerary items yet."))
+
+    kind_opts = "".join(f'<option value="{e(k)}">{e(k.capitalize())}</option>' for k in KINDS)
+    add_body = (f'<label class="field"><span>Kind</span><select name="kind">{kind_opts}</select></label>'
+                + field_("Title", "itin_title", required=True, attrs=' maxlength="200"')
+                + '<div class="pair">' + field_("Start (local time)", "itin_start", type_="datetime-local") + field_("End (local time)", "itin_end", type_="datetime-local") + "</div>"
+                + field_("Location", "itin_location", attrs=' maxlength="300"')
+                + field_("Confirmation code", "itin_confirmation", attrs=' maxlength="60"')
+                + field_("Details", "itin_details", attrs=' maxlength="1000"')
+                + field_("URL (https://…)", "itin_url", type_="url", attrs=' maxlength="500"')
+                + hidden("trip_id", trip["id"]) + hidden("trip_op", "itinerary.add")
+                + button("Add to itinerary", "wide"))
+    out.append(collapsible("Add itinerary item", form(ctx, "trip_op", add_body, tab="trips")))
+    return "".join(out)
+
+
+def _itin_card(ctx: Ctx, trip: dict, item: dict, is_owner: bool, me: str) -> str:
+    node = ctx.node
+    start = _fmt_tripdate(node, item.get("start", ""))
+    end = _fmt_tripdate(node, item.get("end", ""))
+    time_range = f"{e(start)} → {e(end)}" if start and end else e(start or end)
+    url = item.get("url", "")
+    title_html = (f'<a href="{e(url)}" target="_blank" rel="noopener noreferrer">{e(item.get("title", ""))}</a>'
+                  if url and url.startswith("https://") else e(item.get("title", "")))
+    parts = [f'<div class="card"><div class="card-title">{e(item.get("kind", "").capitalize())} — {title_html}</div>']
+    if time_range:
+        parts.append(f'<div class="meta">{time_range}</div>')
+    if item.get("location"):
+        parts.append(f'<div class="meta">📍 {e(item["location"])}</div>')
+    if item.get("confirmation"):
+        parts.append(f'<div class="meta">Confirmation: {e(item["confirmation"])}</div>')
+    if item.get("details"):
+        parts.append(f'<div class="meta">{e(item["details"])}</div>')
+    if item.get("added_by_name"):
+        parts.append(f'<div class="meta">Added by {e(item["added_by_name"])}</div>')
+    can_remove = is_owner or item.get("added_by") == me
+    if can_remove:
+        rm = form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "itinerary.remove")
+                  + hidden("trip_item_id", item["id"]) + button("Remove", "danger secondary small"), tab="trips")
+        parts.append(rm)
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _trip_travel(ctx: Ctx, trip: dict) -> str:
+    """My arrival/departure section."""
+    node = ctx.node
+    me = node.identity.agent_id
+    my_travel = trip.get("travelers", {}).get(me, {})
+    arr = my_travel.get("arrive", {})
+    dep = my_travel.get("depart", {})
+    # datetime-local input needs a local-time value; convert stored UTC ISO back to local
+    def iso_to_local_dt(iso: str) -> str:
+        if not iso:
+            return ""
+        try:
+            tz = ZoneInfo(node.tz)
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+            return dt.strftime("%Y-%m-%dT%H:%M")
+        except Exception:
+            return ""
+
+    body = ('<fieldset><legend>Arrival</legend>'
+            + field_("When", "arr_when", iso_to_local_dt(arr.get("when", "")), type_="datetime-local")
+            + field_("How (flight number, train, etc.)", "arr_how", arr.get("how", ""), attrs=' maxlength="120"')
+            + field_("Arriving at", "arr_where", arr.get("where", ""), attrs=' maxlength="200"')
+            + check("arr_pickup", "1", "I need a pickup", checked=bool(arr.get("needs_pickup")))
+            + '</fieldset><fieldset><legend>Departure</legend>'
+            + field_("When", "dep_when", iso_to_local_dt(dep.get("when", "")), type_="datetime-local")
+            + field_("How", "dep_how", dep.get("how", ""), attrs=' maxlength="120"')
+            + field_("Departing from", "dep_where", dep.get("where", ""), attrs=' maxlength="200"')
+            + check("dep_pickup", "1", "I need a pickup for departure", checked=bool(dep.get("needs_pickup")))
+            + '</fieldset>'
+            + field_("Notes", "travel_notes", my_travel.get("notes", ""), attrs=' maxlength="500"')
+            + hidden("trip_id", trip["id"]) + hidden("trip_op", "traveler.set")
+            + button("Save my travel info", "wide"))
+    return section("Your travel") + form(ctx, "trip_op", body, tab="trips")
+
+
+def _trip_arrivals(ctx: Ctx, trip: dict) -> str:
+    """Everyone's arrivals for the owner/members to see."""
+    travelers = trip.get("travelers", {})
+    out = [section("Everyone's arrivals")]
+    if not travelers:
+        out.append(empty("No arrival info yet."))
+        return "".join(out)
+    rows = []
+    for _aid, tv in travelers.items():
+        arr = tv.get("arrive", {})
+        dep = tv.get("depart", {})
+        parts = [f'<div class="card-title">{e(tv.get("name", ""))}']
+        if arr.get("needs_pickup") or dep.get("needs_pickup"):
+            parts.append(pill("pickup", "needs pickup"))
+        parts.append("</div>")
+        if arr.get("when") or arr.get("how") or arr.get("where"):
+            a_str = " · ".join(x for x in (_fmt_isodate(arr.get("when", "")), arr.get("how", ""), arr.get("where", "")) if x)
+            parts.append(f'<div class="meta">Arrives: {e(a_str)}</div>')
+        if dep.get("when") or dep.get("how") or dep.get("where"):
+            d_str = " · ".join(x for x in (_fmt_isodate(dep.get("when", "")), dep.get("how", ""), dep.get("where", "")) if x)
+            parts.append(f'<div class="meta">Departs: {e(d_str)}</div>')
+        if tv.get("notes"):
+            parts.append(f'<div class="meta">{e(tv["notes"])}</div>')
+        rows.append('<div class="card">' + "".join(parts) + "</div>")
+    out.extend(rows)
+    return "".join(out)
+
+
+def _trip_rides(ctx: Ctx, trip: dict) -> str:
+    node = ctx.node
+    me = node.identity.agent_id
+    is_owner = trip.get("role") == "owner"
+    rides = trip.get("rides", [])
+    out = [section("Rides")]
+    for ride in rides:
+        taken = len(ride.get("passengers", {}))
+        seats_left = ride["seats"] - taken
+        full = seats_left <= 0
+        im_driver = ride["driver_id"] == me
+        im_passenger = me in ride.get("passengers", {})
+        passengers = ", ".join(ride.get("passengers", {}).values()) or "none yet"
+        parts = [f'<div class="card"><div class="card-title">{e(ride["driver_name"])}\'s car']
+        if full:
+            parts.append(pill("cancelled", "full"))
+        parts.append("</div>")
+        if ride.get("from"):
+            parts.append(f'<div class="meta">From: {e(ride["from"])}</div>')
+        if ride.get("leaves_at"):
+            parts.append(f'<div class="meta">Leaves: {e(_fmt_isodate(ride["leaves_at"]))}</div>')
+        parts.append(f'<div class="meta">{e(str(seats_left))} seat{"s" if seats_left != 1 else ""} left · passengers: {e(passengers)}</div>')
+        row = []
+        if not im_driver and not im_passenger and not full:
+            row.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "ride.join")
+                           + hidden("trip_item_id", ride["id"]) + button("Join ride", "ok"), tab="trips"))
+        if im_passenger:
+            row.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "ride.leave")
+                           + hidden("trip_item_id", ride["id"]) + button("Leave ride", "secondary"), tab="trips"))
+        if im_driver or is_owner:
+            row.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "ride.cancel")
+                           + hidden("trip_item_id", ride["id"]) + button("Cancel ride", "danger secondary small"), tab="trips"))
+        if row:
+            parts.append('<div class="row">' + "".join(row) + "</div>")
+        parts.append("</div>")
+        out.append("".join(parts))
+    if not rides:
+        out.append(empty("No rides offered yet."))
+    offer_body = (field_("Seats available", "ride_seats", "3", type_="number", attrs=' min="1" max="50" required')
+                  + field_("Departing from", "ride_from", attrs=' maxlength="200"')
+                  + field_("Leaving at (local time)", "ride_leaves_at", type_="datetime-local")
+                  + hidden("trip_id", trip["id"]) + hidden("trip_op", "ride.offer")
+                  + button("Offer a ride", "wide"))
+    out.append(collapsible("Offer a ride", form(ctx, "trip_op", offer_body, tab="trips")))
+    return "".join(out)
+
+
+def _trip_rooms(ctx: Ctx, trip: dict) -> str:
+    node = ctx.node
+    me = node.identity.agent_id
+    is_owner = trip.get("role") == "owner"
+    rooms = trip.get("rooms", [])
+    out = [section("Rooms")]
+    for room in rooms:
+        taken = len(room.get("occupants", {}))
+        full = taken >= room["beds"]
+        im_in = me in room.get("occupants", {})
+        occupants = ", ".join(room.get("occupants", {}).values()) or "no one yet"
+        parts = [f'<div class="card"><div class="card-title">{e(room["name"])}']
+        if full:
+            parts.append(pill("cancelled", "full"))
+        parts.append("</div>")
+        parts.append(f'<div class="meta">{e(str(room["beds"]))} bed{"s" if room["beds"] != 1 else ""} · {e(occupants)}</div>')
+        row = []
+        if not im_in and not full:
+            row.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "room.join")
+                           + hidden("trip_item_id", room["id"]) + button("Join room", "ok"), tab="trips"))
+        if im_in:
+            row.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "room.leave")
+                           + hidden("trip_item_id", room["id"]) + button("Leave room", "secondary"), tab="trips"))
+        if is_owner:
+            row.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "room.remove")
+                           + hidden("trip_item_id", room["id"]) + button("Remove", "danger secondary small"), tab="trips"))
+        if row:
+            parts.append('<div class="row">' + "".join(row) + "</div>")
+        parts.append("</div>")
+        out.append("".join(parts))
+    if not rooms:
+        out.append(empty("No rooms added yet."))
+    if is_owner:
+        add_body = (field_("Room name", "room_name", placeholder="Master bedroom", attrs=' maxlength="80"')
+                    + field_("Beds", "room_beds", "2", type_="number", attrs=' min="1" max="50" required')
+                    + hidden("trip_id", trip["id"]) + hidden("trip_op", "room.add")
+                    + button("Add room", "wide"))
+        out.append(collapsible("Add a room", form(ctx, "trip_op", add_body, tab="trips")))
+    return "".join(out)
+
+
+def _trip_tasks(ctx: Ctx, trip: dict) -> str:
+    node = ctx.node
+    me = node.identity.agent_id
+    is_owner = trip.get("role") == "owner"
+    tasks = trip.get("tasks", [])
+    out = [section("Tasks")]
+    if tasks:
+        rows = []
+        for task in tasks:
+            mine = task.get("assignee_id") == me
+            done = task.get("done", False)
+            op = "task.undone" if done else "task.done"
+            tick = form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", op)
+                        + hidden("trip_item_id", task["id"])
+                        + f'<button type="submit" class="tick" aria-label="{"Uncheck" if done else "Check off"} {e(task["text"])}">{"✓" if done else ""}</button>',
+                        tab="trips")
+            assignee = f'<div class="meta">→ {e(task.get("assignee_name", ""))}</div>' if task.get("assignee_name") else ""
+            due = f'<div class="meta">Due: {e(task.get("due", ""))}</div>' if task.get("due") else ""
+            can_remove = is_owner or task.get("added_by") == me
+            rm = ""
+            if can_remove:
+                rm = form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "task.remove")
+                          + hidden("trip_item_id", task["id"])
+                          + f'<button type="submit" class="secondary small" aria-label="Remove task">✕</button>', tab="trips")
+            text_cls = "done" if done else ""
+            name_cls = ' class="mine"' if mine and not done else ""
+            rows.append(f'<li class="{text_cls}">{tick}<div class="text"><span{name_cls}>{e(task["text"])}</span>{assignee}{due}</div>{rm}</li>')
+        out.append(f'<div class="card"><ul class="items">{"".join(rows)}</ul></div>')
+    else:
+        out.append(empty("No tasks yet."))
+
+    # Add task form — assignee options: me + all trip members
+    people = {trip["owner"]: trip.get("owner_name", ""), **trip.get("members", {})}
+    assignee_opts = '<option value="">— unassigned —</option><option value="me">Me</option>'
+    for aid, aname in people.items():
+        if aid != node.identity.agent_id:
+            assignee_opts += f'<option value="{e(aid)}">{e(aname)}</option>'
+    add_body = (field_("Task", "task_text", required=True, attrs=' maxlength="200"')
+                + f'<label class="field"><span>Assign to</span><select name="task_assignee">{assignee_opts}</select></label>'
+                + field_("Due date (optional)", "task_due", type_="date")
+                + hidden("trip_id", trip["id"]) + hidden("trip_op", "task.add")
+                + button("Add task", "wide"))
+    out.append(collapsible("Add task", form(ctx, "trip_op", add_body, tab="trips")))
+    return "".join(out)
+
+
+def _trip_polls(ctx: Ctx, trip: dict) -> str:
+    node = ctx.node
+    me = node.identity.agent_id
+    is_owner = trip.get("role") == "owner"
+    polls = trip.get("polls", [])
+    out = [section("Polls")]
+    for poll in polls:
+        my_vote = poll.get("votes", {}).get(me, "")
+        votes = poll.get("votes", {})
+        total = len(votes)
+        parts = [f'<div class="card"><div class="card-title">{e(poll["question"])}']
+        if poll.get("closed"):
+            parts.append(pill("cancelled", "closed"))
+        parts.append("</div>")
+        if not poll.get("closed"):
+            # Show vote buttons
+            vote_btns = []
+            for opt in poll.get("options", []):
+                count = sum(1 for v in votes.values() if v == opt["id"])
+                active = " ok" if my_vote == opt["id"] else " secondary"
+                vote_btns.append(form(ctx, "trip_op",
+                                      hidden("trip_id", trip["id"]) + hidden("trip_op", "poll.vote")
+                                      + hidden("trip_item_id", poll["id"]) + hidden("poll_option", opt["id"])
+                                      + f'<button type="submit" class="{active.strip()}">{e(opt["text"])} ({count})</button>', tab="trips"))
+            parts.append('<div class="row">' + "".join(vote_btns) + "</div>")
+        else:
+            # Show results
+            rows = []
+            for opt in poll.get("options", []):
+                count = sum(1 for v in votes.values() if v == opt["id"])
+                pct = f"{count}/{total}" if total else "0/0"
+                winner = my_vote == opt["id"]
+                rows.append(f'<div class="{"mine" if winner else ""}">{e(opt["text"])}: {e(pct)}</div>')
+            parts.extend(rows)
+        if total:
+            parts.append(f'<div class="meta">{e(str(total))} vote{"s" if total != 1 else ""} so far</div>')
+        can_close = not poll.get("closed") and (is_owner or poll.get("added_by") == me)
+        if can_close:
+            parts.append(form(ctx, "trip_op", hidden("trip_id", trip["id"]) + hidden("trip_op", "poll.close")
+                              + hidden("trip_item_id", poll["id"]) + button("Close poll", "secondary small"), tab="trips"))
+        parts.append("</div>")
+        out.append("".join(parts))
+    if not polls:
+        out.append(empty("No polls yet."))
+    # Add poll form
+    add_body = (field_("Question", "poll_question", required=True, attrs=' maxlength="200"')
+                + textarea("Options (one per line, at least 2)", "poll_options", required=True, placeholder="Cabin in the woods\nBeach house\nCity hotel")
+                + hidden("trip_id", trip["id"]) + hidden("trip_op", "poll.add")
+                + button("Add poll", "wide"))
+    out.append(collapsible("Add poll", form(ctx, "trip_op", add_body, tab="trips")))
+    return "".join(out)
+
+
+def _trip_budget(ctx: Ctx, trip: dict) -> str:
+    from ..money import fmt as fmt_m
+    out = [section("Budget")]
+    try:
+        budget = ctx.node.trip_budget(trip["id"])
+    except Exception:
+        budget = {}
+    if budget:
+        rows = []
+        for ccy, b in budget.items():
+            paid = fmt_m(b.get("you_paid_shares", 0), ccy)
+            owe = fmt_m(b.get("you_owe", 0), ccy)
+            rows.append(f'<div>You paid: <span class="amount pos">{e(paid)}</span> · You owe: <span class="amount neg">{e(owe)}</span> ({e(ccy)})</div>')
+        out.append('<div class="card">' + "<hr class='sep'>".join(rows) + "</div>")
+        out.append(f'<p class="meta"><a href="{e(ctx.base)}?tab=money">View full balances on Money tab</a></p>')
+    else:
+        out.append(empty("No trip expenses recorded yet."))
+    # Quick add expense shortcut
+    ccy = ctx.node.config.get("currency", "USD")
+    people = {trip["owner"]: trip.get("owner_name", ""), **trip.get("members", {})}
+    me = ctx.node.identity.agent_id
+    # contact checkboxes for trip members (excluding self)
+    contact_boxes = []
+    for aid, aname in people.items():
+        if aid != me:
+            c = ctx.node.store.contact(aid)
+            if c:
+                contact_boxes.append(check("contact", c.agent_id, c.name))
+    if contact_boxes:
+        expense_body = (field_("What for", "title", required=True, attrs=' maxlength="120"')
+                        + '<div class="pair">' + field_("Amount you paid", "amount", required=True, attrs=' inputmode="decimal"')
+                        + field_("Currency", "currency", ccy, attrs=' maxlength="3" autocapitalize="characters"') + "</div>"
+                        + '<fieldset><legend>Split with</legend>' + "".join(contact_boxes) + '</fieldset>'
+                        + check("include_me", "1", "Include me in the split", checked=True)
+                        + hidden("plan_id", trip["id"])
+                        + button("Add expense", "wide"))
+        out.append(collapsible("Add expense for this trip", form(ctx, "add_expense", expense_body, tab="trips")))
+    return "".join(out)
+
+
+def _trip_detail(ctx: Ctx, trip: dict) -> str:
+    """Full trip detail page."""
+    node = ctx.node
+    is_owner = trip.get("role") == "owner"
+    me = node.identity.agent_id
+    out = []
+
+    # Header
+    members = ", ".join(trip.get("members", {}).values()) or "no members"
+    owner_name = trip.get("owner_name", "")
+    role_display = "You're organizing" if is_owner else f"Organized by {owner_name}"
+    dates = f"{trip.get('start_date', '')} → {trip.get('end_date', '')}"
+    status = trip.get("status", "planning")
+    parts = [f'<div class="card"><div class="card-title">{e(trip.get("title", ""))}{pill(status)}</div>']
+    if trip.get("destination"):
+        parts.append(f'<div class="meta">📍 {e(trip["destination"])}</div>')
+    parts.append(f'<div class="meta">{e(dates)}</div>')
+    parts.append(f'<div class="meta">{e(role_display)}</div>')
+    parts.append(f'<div class="meta">People: {e(members)}</div>')
+    if trip.get("notes"):
+        parts.append(f'<div class="meta">{e(trip["notes"])}</div>')
+    parts.append("</div>")
+    out.append("".join(parts))
+
+    # Owner edit form
+    if is_owner:
+        status_opts = "".join(f'<option value="{e(s)}"{" selected" if s == status else ""}>{e(s.capitalize())}</option>' for s in STATUSES)
+        edit_body = (field_("Title", "trip_title", trip.get("title", ""), required=True, attrs=' maxlength="120"')
+                     + field_("Destination", "trip_destination", trip.get("destination", ""), attrs=' maxlength="200"')
+                     + '<div class="pair">' + field_("Start date", "trip_start_date", trip.get("start_date", ""), type_="date")
+                     + field_("End date", "trip_end_date", trip.get("end_date", ""), type_="date") + "</div>"
+                     + textarea("Notes", "trip_notes", trip.get("notes", ""), attrs=' maxlength="2000"')
+                     + f'<label class="field"><span>Status</span><select name="trip_status">{status_opts}</select></label>'
+                     + hidden("trip_id", trip["id"]) + hidden("trip_op", "trip.update")
+                     + button("Save trip details", "wide"))
+        out.append(collapsible("Edit trip details", form(ctx, "trip_op", edit_body, tab="trips")))
+
+    # Sections
+    out.append(_trip_itinerary(ctx, trip))
+    out.append(_trip_travel(ctx, trip))
+    out.append(_trip_arrivals(ctx, trip))
+    out.append(_trip_rides(ctx, trip))
+    out.append(_trip_rooms(ctx, trip))
+    out.append(_trip_tasks(ctx, trip))
+    out.append(_trip_polls(ctx, trip))
+    out.append(_trip_budget(ctx, trip))
+
+    # Packing list link
+    list_id = trip.get("links", {}).get("list_id")
+    if list_id:
+        out.append(section("Packing list"))
+        out.append(f'<div class="card"><a href="{e(ctx.base)}?tab=lists">Open packing list on Lists tab</a></div>')
+
+    # Leave / cancel trip
+    if is_owner and status != "cancelled":
+        cancel_body = (check("confirm", "1", "Yes, cancel the trip for everyone")
+                       + hidden("trip_id", trip["id"]) + button("Cancel trip", "danger"))
+        out.append(collapsible("Cancel trip", form(ctx, "cancel_trip", cancel_body, tab="trips")))
+    elif not is_owner:
+        leave_body = (check("confirm", "1", "Yes, leave this trip")
+                      + hidden("trip_id", trip["id"]) + hidden("trip_op", "leave")
+                      + button("Leave trip", "danger secondary small"))
+        out.append(collapsible("Leave trip", form(ctx, "trip_op", leave_body, tab="trips")))
+    return "".join(out)
+
+
+def page_trips(ctx: Ctx) -> str:
+    """Trips tab: list of trips + detail view when ?trip=<id>."""
+    node = ctx.node
+    trip_id = ctx.extra.get("trip_id") or ""
+    if not trip_id:
+        # Try to get from the original query string — store it in extra via the GET handler
+        pass  # trip_id is injected via ctx.extra["trip_id"] from handle_get
+
+    if trip_id:
+        try:
+            trip = node.get_trip(trip_id)
+            return _trip_detail(ctx, trip)
+        except Exception:
+            pass  # fall through to list
+
+    # Trip list
+    trips = sorted(node.trips(), key=lambda t: (t.get("status") == "cancelled", t.get("start_date", "")))
+    out = []
+
+    contacts = ctx.contacts()
+    new_body = (field_("Title", "trip_title", required=True, placeholder="Summer cabin", attrs=' maxlength="120"')
+                + field_("Destination", "trip_destination", placeholder="Lake Tahoe", attrs=' maxlength="200"')
+                + '<div class="pair">' + field_("Start date", "trip_start_date", type_="date", required=True)
+                + field_("End date", "trip_end_date", type_="date", required=True) + "</div>"
+                + (contact_checks(ctx, "Who's coming") if contacts else '<p class="empty">No contacts yet — invite someone on the People tab.</p>')
+                + check("packing_list", "1", "Create a shared packing list", checked=True)
+                + textarea("Notes (optional)", "trip_notes", attrs=' maxlength="2000"')
+                + button("Create trip", "wide"))
+    out.append(collapsible("New trip", form(ctx, "create_trip", new_body, tab="trips"), open_=not trips))
+
+    out.append(section("Trips"))
+    if not trips:
+        out.append(empty("No trips yet."))
+    else:
+        active = [t for t in trips if t.get("status") != "cancelled"]
+        cancelled = [t for t in trips if t.get("status") == "cancelled"]
+        for trip in active:
+            dest = f" · {trip['destination']}" if trip.get("destination") else ""
+            dates = f"{trip.get('start_date', '')} → {trip.get('end_date', '')}"
+            status = trip.get("status", "planning")
+            role = trip.get("role", "member")
+            href = f"{e(ctx.base)}?tab=trips&amp;trip={e(trip['id'])}"
+            out.append(f'<a href="{href}" class="card card-link">'
+                       f'<div class="card-title">{e(trip.get("title", ""))}{pill(status)}{pill(role)}</div>'
+                       f'<div class="meta">{e(dates)}{e(dest)}</div></a>')
+        if cancelled:
+            inner = []
+            for trip in cancelled:
+                dates = f"{trip.get('start_date', '')} → {trip.get('end_date', '')}"
+                href = f"{e(ctx.base)}?tab=trips&amp;trip={e(trip['id'])}"
+                inner.append(f'<a href="{href}" class="card card-link">'
+                             f'<div class="card-title">{e(trip.get("title", ""))}{pill("cancelled")}</div>'
+                             f'<div class="meta">{e(dates)}</div></a>')
+            out.append(collapsible(f"Cancelled ({len(cancelled)})", "".join(inner)))
+    return "".join(out)
+
+
+PAGES = {"inbox": page_inbox, "plans": page_plans, "lists": page_lists, "money": page_money,
+         "people": page_people, "trips": page_trips, "settings": page_settings}
 
 
 def render(ctx: Ctx) -> bytes:

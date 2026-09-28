@@ -419,3 +419,115 @@ def _rotate_key(node: "Node", f: Form) -> None:
     if not f.flag("confirm"):
         raise UIError("tick the box to confirm")
     node.rotate_key()
+
+
+# --------------------------------------------------------------------------- trips
+
+
+def _trip_datetime(node: "Node", text: str) -> str:
+    """Convert a datetime-local form value (local time in node.tz) to a UTC ISO string."""
+    if not text:
+        return ""
+    from ..cli import _local_dt
+
+    try:
+        return _local_dt(text, node.tz).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, TypeError):
+        raise UIError(f"bad date/time {text!r} — use the date picker") from None
+
+
+@action("create_trip", "trips", "Trip created")
+def _create_trip(node: "Node", f: Form) -> None:
+    title = _need(f.get("trip_title"), "a title")
+    start = _need(f.get("trip_start_date"), "a start date")
+    end = _need(f.get("trip_end_date"), "an end date")
+    names = f.all("contact")
+    node.create_trip(title, names, start_date=start, end_date=end,
+                     destination=f.get("trip_destination"),
+                     notes=f.raw("trip_notes").strip(),
+                     packing_list=f.flag("packing_list") and bool(names))
+
+
+@action("trip_op", "trips")
+def _trip_op(node: "Node", f: Form) -> None:
+    trip_id = _need(f.get("trip_id"), "a trip")
+    op = _need(f.get("trip_op"), "an operation")
+    item_id = f.get("trip_item_id")
+    args: dict = {}
+    if op == "itinerary.add":
+        args = {
+            "kind": f.get("kind") or "other",
+            "title": f.get("itin_title"),
+            "start": _trip_datetime(node, f.get("itin_start")),
+            "end": _trip_datetime(node, f.get("itin_end")),
+            "location": f.get("itin_location"),
+            "confirmation": f.get("itin_confirmation"),
+            "details": f.get("itin_details"),
+            "url": f.get("itin_url"),
+        }
+    elif op == "itinerary.remove":
+        args = {"id": item_id}
+    elif op == "traveler.set":
+        args = {
+            "arrive": {
+                "when": _trip_datetime(node, f.get("arr_when")),
+                "how": f.get("arr_how"),
+                "where": f.get("arr_where"),
+                "needs_pickup": f.flag("arr_pickup"),
+            },
+            "depart": {
+                "when": _trip_datetime(node, f.get("dep_when")),
+                "how": f.get("dep_how"),
+                "where": f.get("dep_where"),
+                "needs_pickup": f.flag("dep_pickup"),
+            },
+            "notes": f.raw("travel_notes").strip(),
+        }
+    elif op == "ride.offer":
+        seats = f.int("ride_seats", "seats", lo=1, hi=50, default=1) or 1
+        args = {
+            "seats": seats,
+            "from": f.get("ride_from"),
+            "leaves_at": _trip_datetime(node, f.get("ride_leaves_at")),
+        }
+    elif op in ("ride.join", "ride.leave", "ride.cancel",
+                "room.join", "room.leave", "room.remove",
+                "task.done", "task.undone", "task.remove",
+                "poll.close"):
+        args = {"id": item_id}
+    elif op == "room.add":
+        beds = f.int("room_beds", "beds", lo=1, hi=50, default=1) or 1
+        args = {"name": f.get("room_name") or "Room", "beds": beds}
+    elif op == "task.add":
+        assignee = f.get("task_assignee")
+        args = {
+            "text": _need(f.get("task_text"), "task text"),
+            "assignee": assignee if assignee else "",
+            "due": f.get("task_due"),
+        }
+    elif op == "poll.add":
+        options = [line.strip() for line in f.raw("poll_options").splitlines() if line.strip()]
+        args = {"question": _need(f.get("poll_question"), "a question"), "options": options}
+    elif op == "poll.vote":
+        args = {"id": item_id, "option": f.get("poll_option")}
+    elif op == "trip.update":
+        args = {
+            "title": f.get("trip_title"),
+            "destination": f.get("trip_destination"),
+            "start_date": f.get("trip_start_date"),
+            "end_date": f.get("trip_end_date"),
+            "notes": f.raw("trip_notes").strip(),
+            "status": f.get("trip_status"),
+        }
+    elif op == "leave":
+        args = {}
+    else:
+        raise UIError(f"unknown trip operation {op!r}")
+    node.trip_op(trip_id, op, **args)
+
+
+@action("cancel_trip", "trips", "Trip cancelled")
+def _cancel_trip(node: "Node", f: Form) -> None:
+    if not f.flag("confirm"):
+        raise UIError("tick the box to confirm")
+    node.cancel_trip(f.get("trip_id"))
