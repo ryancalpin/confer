@@ -235,7 +235,7 @@ def shell(ctx: Ctx, content: str) -> bytes:
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Confer">
 <title>Confer — {e(ctx.node.name)}</title>
-<style>{CSS}</style>
+<style nonce="{e(ctx.nonce)}">{CSS}</style>
 </head>
 <body>
 <header class="appbar"><h1>{TAB_LABELS[ctx.tab]}</h1><div class="who">Confer · {e(ctx.node.name)}</div></header>
@@ -565,7 +565,7 @@ def page_money(ctx: Ctx) -> str:
                     bits.append(f"{fmt_money(abs(b[key]), b['currency'])} {side}, {label}")
             meta = f'<div class="meta">{e(" · ".join(bits))}</div>' if bits else ""
             rows.append(f"<div>{line}{meta}</div>")
-        out.append('<div class="card">' + '<hr style="border:0;border-top:1px solid var(--border)">'.join(rows) + "</div>")
+        out.append('<div class="card">' + '<hr class="sep">'.join(rows) + "</div>")
     else:
         out.append(empty("No shared expenses yet."))
 

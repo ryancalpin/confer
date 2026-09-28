@@ -116,6 +116,7 @@ nav.tabs .count {
   position: absolute; top: 6px; left: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
   background: var(--danger); color: #fff; font-size: .7rem; font-weight: 700; line-height: 18px; text-align: center;
 }
+.sep { border: 0; border-top: 1px solid var(--border); }
 """
 
 # One small script, loaded with the CSP nonce. Only three behaviours:

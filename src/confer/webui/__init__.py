@@ -32,6 +32,9 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..lists import ListError
+from ..money import MoneyError
+from ..plans import PlanError
 from ..node import NodeError
 from .actions import ACTIONS, NOTICES, Form, UIError
 from .pages import TABS, Ctx, render
@@ -54,12 +57,12 @@ UI_SECURITY_HEADERS = [
     ("Cache-Control", "no-store"),
     ("X-Content-Type-Options", "nosniff"),
 ]
-_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; "
-        "frame-ancestors 'none'; base-uri 'none'")
+_CSP = "default-src 'none'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 
 def security_headers(nonce: str = "") -> list[tuple[str, str]]:
-    csp = _CSP + (f"; script-src 'nonce-{nonce}'" if nonce else "")
+    # one nonce per response covers the page's single <style> and <script>; no inline styles or handlers
+    csp = _CSP + (f"; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'" if nonce else "; style-src 'none'")
     return [("Content-Security-Policy", csp), *UI_SECURITY_HEADERS]
 
 
@@ -137,7 +140,8 @@ def _parse(content_type: str, body: bytes) -> Form:
 
 
 def _parse_multipart(content_type: str, body: bytes) -> Form:
-    head = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", errors="replace")
+    safe_ct = content_type.replace("\r", "").replace("\n", "")
+    head = f"Content-Type: {safe_ct}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", errors="replace")
     msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(head + body)
     if not msg.is_multipart():
         raise UIError("bad upload")
@@ -179,8 +183,11 @@ def handle_post(node: "Node", request_token: str, body: bytes, content_type: str
         extra = handler(node, form)
     except (NodeError, UIError) as exc:
         return _page(node, tab, public_url, error=str(exc) or "that didn't work")
-    except ValueError as exc:  # e.g. a plan/list validation error surfacing from below
+    except (PlanError, ListError, MoneyError) as exc:  # written for humans
         return _page(node, tab, public_url, error=str(exc) or "invalid input")
+    except ValueError:  # anything else may carry internals (paths, parser details): log it, show a generic message
+        log.info("UI action %s rejected input", name, exc_info=True)
+        return _page(node, tab, public_url, error="Invalid input — check the values and try again.")
     except Exception:
         log.exception("UI action %s failed", name)
         return _page(node, tab, public_url, error="Something went wrong on the node — check its log.")
