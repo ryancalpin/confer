@@ -36,6 +36,7 @@ from ..lists import ListError
 from ..money import MoneyError
 from ..plans import PlanError
 from ..node import NodeError
+from ..trips import TripError
 from .actions import ACTIONS, NOTICES, Form, UIError
 from .pages import TABS, Ctx, render
 
@@ -97,7 +98,12 @@ def handle_get(node: "Node", request_token: str, sub: str = "", query: str = "",
         return _json(404, "not found")
     tab = (params.get("tab") or ["inbox"])[0]
     ok = (params.get("ok") or [""])[0]
-    return _page(node, tab, public_url, notice=NOTICES.get(ok, ""))
+    extra: dict = {}
+    if tab == "trips":
+        trip_id = (params.get("trip") or [""])[0]
+        if trip_id:
+            extra["trip_id"] = trip_id
+    return _page(node, tab, public_url, notice=NOTICES.get(ok, ""), extra=extra)
 
 
 _UNSAFE_TYPES = ("html", "xml", "svg", "javascript", "ecmascript")
@@ -183,7 +189,7 @@ def handle_post(node: "Node", request_token: str, body: bytes, content_type: str
         extra = handler(node, form)
     except (NodeError, UIError) as exc:
         return _page(node, tab, public_url, error=str(exc) or "that didn't work")
-    except (PlanError, ListError, MoneyError) as exc:  # written for humans
+    except (PlanError, ListError, MoneyError, TripError) as exc:  # written for humans
         return _page(node, tab, public_url, error=str(exc) or "invalid input")
     except ValueError:  # anything else may carry internals (paths, parser details): log it, show a generic message
         log.info("UI action %s rejected input", name, exc_info=True)
