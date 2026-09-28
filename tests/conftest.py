@@ -50,8 +50,8 @@ class Net:
         self.servers.append(srv)
         return f"http://127.0.0.1:{srv.port}"
 
-    def pair(self, a: Node, b: Node, a_grants: str = "plans,files,notes", b_grants: str = "plans,files,notes") -> None:
-        """a invites b; a grants b ``a_grants``; b grants a ``b_grants``."""
+    def pair(self, a: Node, b: Node, a_grants: str | None = None, b_grants: str | None = None) -> None:
+        """a invites b; a grants b ``a_grants``; b grants a ``b_grants`` (None = node defaults)."""
         token = a.create_invite(b.name, a_grants)
         b.accept_invite(token, grants=b_grants)
         wait_for(lambda: (c := b.store.contact(a.identity.agent_id)) and c.status == "active", what=f"{b.name} paired with {a.name}")

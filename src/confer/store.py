@@ -76,6 +76,24 @@ CREATE TABLE IF NOT EXISTS intros (           -- introductions offered TO me
     expires_at  REAL NOT NULL,
     created_at  REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS lists (            -- shared lists (owned or joined)
+    id         TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ledger (           -- expenses and settlements with one contact
+    id         TEXT PRIMARY KEY,
+    contact    TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    status     TEXT NOT NULL,                 -- pending | accepted | disputed | cancelled
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ledger_contact ON ledger(contact, created_at);
+CREATE TABLE IF NOT EXISTS presence (         -- latest shared status/ETA/location per contact
+    contact    TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    expires_at REAL NOT NULL
+);
 """
 
 
@@ -269,6 +287,64 @@ class Store:
     def intros(self) -> list[dict]:
         return [dict(r) for r in self._q("SELECT * FROM intros ORDER BY created_at DESC")]
 
+    # shared lists ----------------------------------------------------------
+    def save_list(self, lst: dict) -> None:
+        self._x("INSERT INTO lists(id,data,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+                (lst["id"], json.dumps(lst), time.time()))
+
+    def get_list(self, list_id: str) -> dict | None:
+        rows = self._q("SELECT data FROM lists WHERE id=?", (list_id,))
+        return json.loads(rows[0]["data"]) if rows else None
+
+    def find_list(self, prefix: str) -> dict | None:
+        if (lst := self.get_list(prefix)) or not prefix.isalnum():
+            return lst
+        rows = self._q("SELECT data FROM lists WHERE substr(id, 1, ?) = ?", (len(prefix), prefix))
+        return json.loads(rows[0]["data"]) if len(rows) == 1 else None
+
+    def all_lists(self) -> list[dict]:
+        return [json.loads(r["data"]) for r in self._q("SELECT data FROM lists ORDER BY updated_at DESC")]
+
+    def delete_list(self, list_id: str) -> None:
+        self._x("DELETE FROM lists WHERE id=?", (list_id,))
+
+    # money ledger ----------------------------------------------------------
+    def save_entry(self, entry: dict) -> None:
+        self._x(
+            "INSERT INTO ledger(id,contact,data,status,created_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET data=excluded.data, status=excluded.status, contact=excluded.contact",
+            (entry["id"], entry["contact"], json.dumps(entry), entry["status"], entry.get("created_at", time.time())),
+        )
+
+    def entry(self, entry_id: str) -> dict | None:
+        rows = self._q("SELECT data FROM ledger WHERE id=?", (entry_id,))
+        return json.loads(rows[0]["data"]) if rows else None
+
+    def find_entry(self, prefix: str) -> dict | None:
+        if (e := self.entry(prefix)) or not prefix.isalnum():
+            return e
+        rows = self._q("SELECT data FROM ledger WHERE substr(id, 1, ?) = ?", (len(prefix), prefix))
+        return json.loads(rows[0]["data"]) if len(rows) == 1 else None
+
+    def entries(self, contact: str | None = None) -> list[dict]:
+        if contact:
+            rows = self._q("SELECT data FROM ledger WHERE contact=? ORDER BY created_at", (contact,))
+        else:
+            rows = self._q("SELECT data FROM ledger ORDER BY created_at")
+        return [json.loads(r["data"]) for r in rows]
+
+    # presence --------------------------------------------------------------
+    def set_presence(self, contact: str, data: dict, expires_at: float) -> None:
+        self._x("INSERT INTO presence(contact,data,expires_at) VALUES(?,?,?) ON CONFLICT(contact) DO UPDATE SET data=excluded.data, expires_at=excluded.expires_at",
+                (contact, json.dumps(data), expires_at))
+
+    def clear_presence(self, contact: str) -> None:
+        self._x("DELETE FROM presence WHERE contact=?", (contact,))
+
+    def presence(self, now: float) -> dict[str, dict]:
+        self._x("DELETE FROM presence WHERE expires_at<=?", (now,))  # never keep a location history
+        return {r["contact"]: json.loads(r["data"]) for r in self._q("SELECT contact, data FROM presence")}
+
     # key rotation ----------------------------------------------------------
     def rename_agent(self, old: str, new: str) -> None:
         """A contact (or this node) moved to a new key: re-point every local record.
@@ -280,6 +356,11 @@ class Store:
             self._db.execute("UPDATE inbox SET contact=? WHERE contact=?", (new, old))
             self._db.execute("UPDATE intros SET peer_id=? WHERE peer_id=?", (new, old))
             self._db.execute("UPDATE intros SET introducer=? WHERE introducer=?", (new, old))
+            self._db.execute("UPDATE ledger SET contact=? WHERE contact=?", (new, old))
+            self._db.execute("UPDATE presence SET contact=? WHERE contact=?", (new, old))
+            for table in ("lists", "ledger"):
+                for r in self._db.execute(f"SELECT id, data FROM {table} WHERE instr(data, ?) > 0", (old,)).fetchall():  # noqa: S608
+                    self._db.execute(f"UPDATE {table} SET data=? WHERE id=?", (r["data"].replace(old, new), r["id"]))  # noqa: S608
             for r in self._db.execute("SELECT id, data FROM plans WHERE instr(data, ?) > 0", (old,)).fetchall():
                 self._db.execute("UPDATE plans SET data=? WHERE id=?", (r["data"].replace(old, new), r["id"]))
 

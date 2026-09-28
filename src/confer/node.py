@@ -12,6 +12,9 @@ Grants are what a contact may do *with my node*:
   files        may send me files (end-to-end encrypted)
   notes        may send me short messages
   intros       may introduce other people to me (I still approve each one)
+  lists        may share lists with me
+  money        may send me expense shares / payments to confirm
+  location     may send me their status, ETA and location (off by default)
 """
 
 from __future__ import annotations
@@ -49,13 +52,16 @@ from .availability import (
 )
 from .envelope import SEEN_TTL_SECONDS, EnvelopeError, MAX_AGE_SECONDS, canonical, open_, seal
 from .identity import Identity, b64d, b64e, fingerprint, verify
+from .lists import ListsMixin
+from .money import MoneyMixin
+from .presence import PresenceMixin
 from .store import Contact, Store
 from .transport import DeliveryError, HttpTransport
 
 log = logging.getLogger("confer")
 
-GRANTS = ("plans", "autoconfirm", "files", "notes", "intros")
-DEFAULT_GRANTS = ["plans", "files", "notes", "intros"]
+GRANTS = ("plans", "autoconfirm", "files", "notes", "intros", "lists", "money", "location")
+DEFAULT_GRANTS = ["plans", "files", "notes", "intros", "lists", "money"]  # location is opt-in
 KEY_GRACE_SECONDS = 30 * 24 * 3600  # keep answering on a rotated-away key this long
 INTRO_TTL_SECONDS = 14 * 24 * 3600
 MAX_PENDING_INTROS = 20  # per introducer
@@ -120,7 +126,7 @@ class PlansProvider:
         return []
 
 
-class Node:
+class Node(ListsMixin, MoneyMixin, PresenceMixin):
     def __init__(
         self,
         home: Path,
@@ -188,6 +194,8 @@ class Node:
             "notify_cmd": "",
             "feed_token": secrets.token_urlsafe(18),
             "tentative_holds": True,
+            "currency": "USD",
+            "pay_link": "",  # e.g. https://venmo.com/u/you — shown to people who owe you
         }
         (home / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
         return cls(home, **kw)
@@ -797,6 +805,9 @@ class Node:
 
     def _handlers(self) -> dict[str, Callable[[Contact, dict], None]]:
         return {
+            **self._list_handlers(),
+            **self._money_handlers(),
+            **self._presence_handlers(),
             "pair.accept": self._on_pair_accept,
             "plan.propose": self._on_plan_propose,
             "plan.respond": self._on_plan_respond,
