@@ -154,7 +154,22 @@ More: `confer grant Sam +autoconfirm`, `confer note Sam "Thai or Italian?"`,
 `confer send-file Sam menu.pdf`, `confer plan revise <id> --from ...`,
 `confer plan cancel <id>`, `confer --json ...` for scripts.
 
-## Use it from your AI assistant (MCP)
+## Use it from any agent or harness
+
+One tool catalog (36 tools) is exposed four ways:
+- **MCP:** `confer mcp`, over stdio or `--http`.
+- **REST API:** `confer api enable`, then `POST /api/v1/tools/<name>`, with an OpenAPI spec.
+- **Function-calling schemas:** `confer tools export --format openai|anthropic|gemini`.
+- **Python client:** `confer.client.ConferClient`.
+
+**[integrations/](integrations/)** has copy-paste setup for:
+- **MCP clients:** Claude Code, Claude Desktop, Codex CLI, Gemini CLI,
+  Cursor, VS Code, Goose, Hermes.
+- **Skill-based agents** such as OpenClaw.
+- **Agent frameworks:** the Anthropic and OpenAI APIs and Agents SDKs,
+  LangChain, Gemini.
+- **Automation tools:** n8n, Zapier, Home Assistant.
+- **Other A2A agents.**
 
 ```json
 { "mcpServers": { "confer": { "command": "confer", "args": ["mcp"] } } }

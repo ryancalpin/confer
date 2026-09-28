@@ -10,6 +10,7 @@
 | Who may reach your agent | Only paired contacts. Everything else is refused before any handler runs. |
 | What a contact may do | Per-contact grants (`plans`, `autoconfirm`, `files`, `notes`, `intros`, `lists`, `money`, `location`) checked on every message. Only a plan's or list's owner can change it. |
 | Location | Opt-in per contact (`location` grant, off by default). It is shared only when you choose to, it expires (24 h at most), and receivers keep only the latest update, never a history. |
+| REST API | Off until `confer api enable`. It needs a 256-bit bearer token, compared in constant time. The body is not read until the token checks out. Tools that act for the human also need a `Confer-Human-Approved: true` header, so integrators have to wire in an approval step. Remote callers can't set `notify_cmd` or a local calendar path. MCP over HTTP binds to localhost only. |
 | Money | Confer never moves money or holds payment credentials. Expense shares count only after the other person accepts them. |
 | Replays | Each envelope id is remembered for 8 days, and envelopes older than 7 days are refused. |
 | Introductions | Only contacts you gave the `intros` grant can introduce people, and every introduction needs your approval. The peer's key is vouched for by the introducer, and its fingerprint is shown to you. |

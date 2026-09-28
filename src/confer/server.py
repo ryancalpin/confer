@@ -32,7 +32,7 @@ from .envelope import MAX_AGE_SECONDS, MAX_CT_CHARS, MEDIA_TYPE, EnvelopeError, 
 from .identity import b64d, verify
 from .node import Node, Rejected
 from .transport import A2A_PATH, A2A_VERSION, REJECTED, a2a_reply, extract_envelope, text_reply
-from . import webui
+from . import api, webui
 
 log = logging.getLogger("confer.server")
 
@@ -77,7 +77,7 @@ def agent_card(node: Node, public_url: str, relay: bool) -> dict:
         "name": f"{who['name']} (Confer)",
         "description": "Personal agent endpoint on the Confer network: trusted-contact scheduling, notes and E2E-encrypted files.",
         "url": url,
-        "version": "0.3.0",
+        "version": "0.4.0",
         "provider": {"organization": "Confer (open source)", "url": "https://github.com/ryancalpin/confer"},
         "supportedInterfaces": [{"url": url, "protocolBinding": "JSONRPC", "protocolVersion": A2A_VERSION}],
         "capabilities": {
@@ -232,7 +232,7 @@ def _rpc_error(rid: Any, code: int, message: str) -> dict:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "Confer/0.3"
+    server_version = "Confer/0.4"
     protocol_version = "HTTP/1.1"
 
     @property
@@ -265,6 +265,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _api(self, method: str, path: str, body: bytes) -> None:
+        if not api.enabled(self.app.node):
+            return self._send(404, {"error": "not found"})
+        if method == "GET" and not self.app.ip_limiter.allow(self._client()):  # POSTs are limited in do_POST
+            return self._send(429, {"ok": False, "error": "rate limited"})
+        code, raw = api.handle(self.app.node, method, path, self.headers, body, self.app.public_url)
+        self._send(code, raw)
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path in ("/.well-known/agent-card.json", "/.well-known/agent.json"):
@@ -276,6 +284,8 @@ class _Handler(BaseHTTPRequestHandler):
             expected = str(self.app.node.config.get("feed_token", ""))
             if expected and hmac.compare_digest(token, expected):
                 return self._send(200, self.app.node.calendar_ics(), "text/calendar; charset=utf-8")
+        if path.startswith(api.PREFIX + "/"):
+            return self._api("GET", path, b"")
         if path.startswith("/ui/"):
             request_token, _, sub = path[len("/ui/"):].partition("/")
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -303,6 +313,14 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(413, {"error": "body too large or empty"})
             body_bytes = self.rfile.read(length)
             return self._send_ui(webui.handle_post(self.app.node, request_token, body_bytes, ctype, public_url=self.app.public_url))
+        if path.startswith(api.PREFIX + "/"):
+            if not api.enabled(self.app.node) or not api.authorized(self.app.node, self.headers.get("Authorization")):
+                self.close_connection = True  # never read a body for an unauthenticated caller
+                return self._send(404 if not api.enabled(self.app.node) else 401, {"ok": False, "error": "not found" if not api.enabled(self.app.node) else "missing or wrong API token"})
+            if length < 0 or length > api.MAX_BODY:
+                self.close_connection = True
+                return self._send(413, {"ok": False, "error": "body too large"})
+            return self._api("POST", path, self.rfile.read(length) if length else b"")
         if length <= 0 or length > MAX_BODY:
             return self._send(413, {"error": "body too large or empty"})
         try:

@@ -513,7 +513,35 @@ def cmd_relay(a: argparse.Namespace) -> None:
 def cmd_mcp(a: argparse.Namespace, node: Node) -> None:
     from .mcp_server import run
 
-    run(node)
+    run(node, http=a.http, host=a.host, port=a.port)
+
+
+def cmd_api(a: argparse.Namespace, node: Node) -> None:
+    import secrets as _secrets
+
+    if a.api_cmd == "disable":
+        node.config["api_token"] = ""
+        node.save_config()
+        return print("REST API disabled.")
+    if a.api_cmd in ("enable", "rotate") or not node.config.get("api_token"):
+        if a.api_cmd == "enable" and node.config.get("api_token"):
+            return print("Already enabled. `confer api token` shows it; `confer api rotate` replaces it.")
+        node.config["api_token"] = _secrets.token_urlsafe(32)
+        node.save_config()
+    base = node.config.get("endpoint") or "http://127.0.0.1:3067"
+    print(f"REST API: {base}/api/v1   (OpenAPI: {base}/api/v1/openapi.json)")
+    print(f"Token:    {node.config['api_token']}")
+    print("Keep the token secret. Tools that act for you also need the header 'Confer-Human-Approved: true'.")
+
+
+def cmd_tools(a: argparse.Namespace, node: Node | None = None) -> None:
+    from . import tools as T
+
+    if a.tools_cmd == "list":
+        for t in T.TOOLS.values():
+            print(f"{'⚠ ' if t.human_ok else '  '}{t.name:26} {t.description[:90]}")
+        return
+    print(json.dumps(T.export(a.format, a.base_url or ""), indent=2))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -794,7 +822,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=3068)
     s.add_argument("--public-url")
     s.set_defaults(fn=cmd_relay, needs_node=False)
-    sub.add_parser("mcp", help="run as an MCP server over stdio (for Claude, Hermes, ...)").set_defaults(fn=cmd_mcp)
+    s = sub.add_parser("mcp", help="run as an MCP server (stdio by default) for Claude, Codex, Gemini, Cursor, Hermes, ...")
+    s.add_argument("--http", action="store_true", help="streamable HTTP instead of stdio (localhost only)")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=3069)
+    s.set_defaults(fn=cmd_mcp)
+    api_p = sub.add_parser("api", help="REST API for harnesses, automations and the iOS app").add_subparsers(dest="api_cmd", required=True)
+    for name, help_ in (("enable", "create a token and turn the API on"), ("token", "show the URL and token"),
+                        ("rotate", "replace the token"), ("disable", "turn the API off")):
+        api_p.add_parser(name, help=help_).set_defaults(fn=cmd_api)
+    tools_p = sub.add_parser("tools", help="list or export agent tool definitions").add_subparsers(dest="tools_cmd", required=True)
+    tools_p.add_parser("list").set_defaults(fn=cmd_tools, needs_node=False)
+    s = tools_p.add_parser("export", help="JSON tool definitions for function-calling frameworks")
+    s.add_argument("--format", default="openai", choices=["openai", "anthropic", "gemini", "mcp", "openapi"])
+    s.add_argument("--base-url", help="server URL to put in the OpenAPI document")
+    s.set_defaults(fn=cmd_tools, needs_node=False)
     return p
 
 

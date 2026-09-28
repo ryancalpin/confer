@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0
+- **Trips** (`confer trip ...`, `trip.share` / `trip.op` / `trip.close`, grant `trips`):
+  - itinerary: flights, lodging, activities, with confirmation codes and links;
+  - each person's arrival and departure, including "needs pickup";
+  - carpools and rooms, both capacity-checked;
+  - tasks with an assignee and due date;
+  - polls;
+  - a linked packing list and trip budget.
+  - Trip days count as busy time, and the trip and its itinerary appear in the calendar feed.
+- **Integrations**: a single tool catalog (36 tools) drives:
+  - MCP over stdio or streamable HTTP;
+  - a REST API (`confer api enable`) with OpenAPI 3.1 and a `Confer-Human-Approved` header for sensitive tools;
+  - function-calling exports (`confer tools export --format openai|anthropic|gemini|mcp|openapi`);
+  - the Python `ConferClient`;
+  - setup guides for many harnesses in `integrations/`.
+- **Settings validation** shared by every remote surface (`confer.settings`).
+
 ## 0.3.0
 - **Shared lists** (`confer list ...`, `list.share` / `list.op` / `list.close`, grant `lists`): groceries, packing, "who's bringing what", with claims.
 - **Expense splitting** (`confer money ...`, `money.expense` / `money.settle` / `money.ack` / `money.cancel`, grant `money`): equal or custom splits, accept/dispute, settle-up, per-person balances, optional `pay_link`. Records only; no money moves.
