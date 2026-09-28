@@ -107,7 +107,7 @@ There are three ways to manage it, all over the same node:
 
 | | Best for |
 |---|---|
-| **Phone app.** `confer serve` prints a private link; add it to your home screen. | Day to day: approve plans, money requests and introductions; manage lists; see balances; share your ETA; edit each person's permissions and all settings. |
+| **Phone app.** `confer serve` prints a private link; open it on your phone over Tailscale and use Share → Add to Home Screen. There are six tabs: Inbox · Plans · Lists · Money · People · Settings. Treat the link like a password; Settings can rotate it. | Day to day: approve plans, money requests and introductions; manage lists; see balances; share your ETA; edit each person's permissions and all settings. |
 | **Your AI assistant** (MCP, 28 tools) | Just ask: "plan dinner with Sam Friday", "add charcoal to the BBQ list", "what do I owe Priya?". Money, location and approvals always wait for your OK. |
 | **CLI** (`confer ...`, `--json` for scripts) | Setup, automation and power use. |
 

@@ -1092,8 +1092,9 @@ class Node(ListsMixin, MoneyMixin, PresenceMixin):
         (self.home / "calendar.ics").write_text(self.calendar_ics())
 
 
-def check_url(value: str) -> str:
-    """Validate an http(s) base URL given by the owner; returns it without a trailing slash."""
+def check_url(value: str, *, allow_query: bool = False) -> str:
+    """Validate an http(s) URL given by the owner; returns it without a trailing slash.
+    Base URLs (endpoint, relay) must not carry a query; links (pay_link, webhooks) may."""
     from urllib.parse import urlparse
 
     v = value.strip().rstrip("/")
@@ -1102,7 +1103,7 @@ def check_url(value: str) -> str:
         u.port  # raises on a malformed port
     except ValueError as exc:
         raise NodeError(f"bad URL {value!r}: {exc}") from exc
-    if u.scheme not in ("http", "https") or not u.hostname or u.query or u.fragment or u.netloc.endswith(":"):
+    if u.scheme not in ("http", "https") or not u.hostname or (u.query and not allow_query) or u.fragment or u.netloc.endswith(":"):
         raise NodeError(f"bad URL {value!r}: need http(s)://host[:port][/path]")
     return v
 
@@ -1114,7 +1115,10 @@ def _safe_name(name: str) -> str:
 
 def _clean_url(value: Any) -> str:
     v = str(value or "").strip().rstrip("/")
-    return v if v.startswith(("http://", "https://")) and len(v) < 500 else ""
+    try:
+        return check_url(v, allow_query=True) if v.startswith(("http://", "https://")) and len(v) < 500 else ""
+    except NodeError:
+        return ""
 
 
 def _ics_times(iv: Interval, tz: str) -> list[str]:

@@ -13,7 +13,7 @@
 | Money | Confer never moves money or holds payment credentials. Expense shares count only after the other person accepts them. |
 | Replays | Each envelope id is remembered for 8 days, and envelopes older than 7 days are refused. |
 | Introductions | Only contacts you gave the `intros` grant can introduce people, and every introduction needs your approval. The peer's key is vouched for by the introducer, and its fingerprint is shown to you. |
-| Phone inbox | Served only at a secret-token URL (`ui_token`, 192 bits). A hidden form token is required too. Strict CSP, no framing, no caching, and all text is HTML-escaped. |
+| Phone app | Served only at a secret-token URL (`ui_token`, 192 bits); the same token is also required as a hidden form field. Security headers: strict CSP with a per-response script nonce, no framing, no caching. All text from other people is HTML-escaped. Uploads are capped at 11 MB, and only for the file-send action. Downloads come only from `<home>/files`, as attachments. If the link leaks, **Settings → Rotate this page's link** kills it at once. From the web you can't set anything that runs a program or reads a local file (`notify_cmd`, a local calendar path); those are CLI-only. |
 
 ## What it does not protect
 

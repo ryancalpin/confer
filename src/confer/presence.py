@@ -110,8 +110,12 @@ class PresenceMixin:
         self.kick()
 
     def presence(self: "Node") -> list[dict]:
+        live = self.store.presence(self.now())  # also drops expired rows
+        for item in self.store.inbox():  # expired shares shouldn't linger in the inbox either
+            if item.kind == "presence" and item.contact not in live:
+                self.store.close_inbox(item.id)
         out = []
-        for aid, p in self.store.presence(self.now()).items():
+        for aid, p in live.items():
             c = self.store.contact(aid)
             name = c.name if c else aid[:8]
             out.append({"contact": name, **p, "summary": describe(name, p)})

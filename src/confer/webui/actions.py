@@ -341,11 +341,11 @@ def _introduce(node: "Node", f: Form) -> None:
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
-def _url_or_empty(value: str, what: str, *, https_only: bool = False) -> str:
+def _url_or_empty(value: str, what: str, *, https_only: bool = False, allow_query: bool = True) -> str:
     if not value:
         return ""
     try:
-        url = check_url(value)
+        url = check_url(value, allow_query=allow_query)
     except NodeError:
         raise UIError(f"{what} must be an http(s) URL like https://host/path") from None
     if https_only and not url.startswith("https://"):
@@ -368,8 +368,8 @@ def _save_settings(node: "Node", f: Form) -> None:
     cfg = node.config
     new: dict[str, Any] = {}
     new["name"] = _need(f.get("name"), "your name")[:60]
-    new["endpoint"] = _url_or_empty(f.get("endpoint"), "the endpoint")
-    new["relay"] = _url_or_empty(f.get("relay"), "the relay")
+    new["endpoint"] = _url_or_empty(f.get("endpoint"), "the endpoint", allow_query=False)
+    new["relay"] = _url_or_empty(f.get("relay"), "the relay", allow_query=False)
     tz = f.get("tz") or "UTC"
     try:
         ZoneInfo(tz)

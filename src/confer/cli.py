@@ -81,7 +81,9 @@ def cmd_config(a: argparse.Namespace, node: Node) -> None:
         return
     value: object = a.value
     if a.key in ("endpoint", "relay", "notify_webhook", "pay_link") and a.value:
-        value = check_url(a.value)
+        value = check_url(a.value, allow_query=a.key in ("notify_webhook", "pay_link"))
+        if a.key == "pay_link" and not str(value).startswith("https://"):
+            raise NodeError("pay_link must start with https://")
     if a.key == "tentative_holds":
         value = a.value.lower() in ("1", "true", "yes", "on")
     if a.key == "nudge_after_hours":

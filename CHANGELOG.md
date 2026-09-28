@@ -4,7 +4,15 @@
 - **Shared lists** (`confer list ...`, `list.share` / `list.op` / `list.close`, grant `lists`): groceries, packing, "who's bringing what", with claims.
 - **Expense splitting** (`confer money ...`, `money.expense` / `money.settle` / `money.ack` / `money.cancel`, grant `money`): equal or custom splits, accept/dispute, settle-up, per-person balances, optional `pay_link`. Records only; no money moves.
 - **Status / ETA / location** (`confer share`, `presence.update` / `presence.clear`, grant `location`, off by default): expiring and latest-only, sent to contacts or to everyone in a plan.
-- MCP: 28 tools. New config: `currency`, `pay_link`.
+- **Phone app**: the web inbox is now a full management UI with six tabs (Inbox · Plans · Lists · Money · People · Settings). It covers creating plans, lists and expenses; invites (copy or share); per-person permission checkboxes; settings; status and location sharing; sending notes and files; downloading received files; and rotating the link and the identity key.
+- MCP: 28 tools. New config: `currency`, `pay_link`. `pay_link` and `notify_webhook` may now contain query strings.
+- Security fixes:
+  - Accepted money entries are final.
+  - Per-contact caps on shared lists and pending money requests.
+  - Pay links must be https.
+  - Leaving a list waits for the owner to confirm.
+  - Key rotation rewrites only id fields, never free text.
+  - Expired location shares are cleared from the inbox.
 
 ## 0.2.0
 - **Vouched introductions** (`confer introduce A B`, `intro.offer` / `pair.intro`, new `intros` grant).
